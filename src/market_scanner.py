@@ -1,0 +1,250 @@
+import requests
+import json
+import time
+import re
+from datetime import datetime, timedelta
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
+class MarketScanner:
+    def __init__(self):
+        self.gamma_api_url = "https://gamma-api.polymarket.com"
+
+
+    def parse_market_title(self, title, city=None):
+        """
+        Extracts City, Date, Unit, and Type from title.
+        Example: "Will the highest temperature in Atlanta be between 46-47°F on January 29?"
+        """
+        title = title.lower().replace("–", "-") # Normalize dashes
+        
+        # Determine Unit
+        unit = None
+        if "°c" in title or "celsius" in title:
+            unit = "C"
+        elif "°f" in title or "fahrenheit" in title:
+            unit = "F"
+        
+        # Default based on city if not explicit
+        if unit is None and city:
+            international_cities = ["london", "paris", "tokyo", "berlin", "madrid", "rome"]
+            if any(ic in city.lower() for ic in international_cities):
+                unit = "C"
+            else:
+                unit = "F"
+        elif unit is None:
+            unit = "F" # Final fallback
+            
+        # Regex to find range like "46-47" or single value "11"
+        range_match = re.search(r'(\d+)\s*-\s*(\d+)', title)
+        single_match = re.search(r'(\d+)', title)
+        
+        val_min, val_max = None, None
+        
+        if range_match:
+            val_min = float(range_match.group(1))
+            val_max = float(range_match.group(2))
+        elif single_match:
+            val = float(single_match.group(1))
+            val_min = val
+            val_max = val 
+            
+        return {"unit": unit, "min": val_min, "max": val_max}
+
+    def scan_for_snipes(self, weather_engine, log_callback=None):
+        """
+        Finds markets where Price is < 10 cents but Model Prob is high (Lottery Snipe).
+        """
+        def log(msg):
+            if log_callback: log_callback(msg)
+            print(msg)
+
+        markets = self.get_weather_markets(log_callback=log_callback)
+        opportunities = []
+
+        log(f"Analyzing {len(markets)} markets for Snipes...")
+
+        for m in markets:
+            # Only look at "Temperature" markets for now
+            if "temperature" not in m['question'].lower(): continue
+            
+            # Parse Title for Constraints
+            parsed = self.parse_market_title(m['question'])
+            if parsed['min'] is None: continue
+
+            # Robust City Extraction
+            slug_parts = m['slug'].split("-")
+            # Usually: highest-temperature-in-CITY-on-MONTH-DAY
+            if "in" in slug_parts:
+                idx = slug_parts.index("in") + 1
+                city = slug_parts[idx]
+            else:
+                city = "unknown"
+                
+            if city == "unknown": continue 
+
+            # Get Forecast from Engine
+            prob = weather_engine.get_forecast_probability(
+                city, 
+                m['endDate'], 
+                (parsed['min'], parsed['max']), 
+                parsed['unit'],
+                log=None # Don't flood logs here
+            )
+            
+            prices = m.get('outcomePrices')
+            if not prices or not isinstance(prices, list): continue
+            
+            try:
+                # Polymarket Yes is usually index 0
+                yes_price = float(prices[0]) if prices and len(prices) > 0 else 0
+                
+                # SKIP if price is zero (closed or no liquidity)
+                if yes_price < 0.01: continue
+
+                # THE SNIPER FORMULA
+                # 1. Price is cheap (Lottery Ticket)
+                is_cheap = yes_price <= 0.10  # Max 10 cents
+                
+                # 2. We have an edge (Model says it's way more likely than price)
+                # e.g. Price is 0.02 (2%), Model says 0.15 (15%). EV is 7.5x.
+                has_edge = prob > (yes_price * 2.5) 
+                
+                if is_cheap and has_edge:
+                    opportunities.append({
+                        "id": m['id'],
+                        "question": m['question'],
+                        "city": city.capitalize(),
+                        "market_price": yes_price,
+                        "my_prob": prob,
+                        "unit": parsed['unit'],
+                        "edge": prob - yes_price,
+                        "ev": prob / yes_price if yes_price > 0 else 0,
+                        "market": m,
+                        "outcome": "YES"
+                    })
+            except Exception as e:
+                continue
+
+        # Sort by best EV
+        opportunities.sort(key=lambda x: x['ev'], reverse=True)
+        return opportunities
+
+    def _make_request(self, url, params=None, retries=3, backoff=1, log=None):
+        """Helper to make robust requests with retries."""
+        for attempt in range(retries):
+            try:
+                r = requests.get(url, params=params, timeout=15)
+                r.raise_for_status()
+                return r.json()
+            except Exception as e:
+                if attempt < retries - 1:
+                    time.sleep(backoff * (attempt + 1))
+                else:
+                    if log: log(f"Request failed: {e}")
+                    raise e
+        return None
+
+    def get_weather_markets(self, log_callback=None):
+        """
+        Fetches active markets focusing ONLY on real weather (Temp, Rain, Snow).
+        Uses concurrency for speed.
+        """
+        def log(msg):
+            if log_callback: log_callback(msg)
+            print(msg)
+
+        weather_markets = []
+        seen_ids = set()
+
+        def process_event(event):
+            title = event.get('title', '').lower()
+            slug = event.get('slug', '').lower()
+            markets = event.get('markets', [])
+            
+            # 1. STRICT AGGRESSIVE NEGATIVE FILTER
+            negative_keywords = [
+                'ukraine', 'token', 'coin', 'crypto', 'btc', 'eth', 'solana', 'price of',
+                'nba', 'basketball', 'nfl', 'football', 'nhl', 'hockey', 'mlb', 'baseball',
+                'vanguard', 's&p', 'stock', 'market cap', 'election', 'president', 'trump', 'biden',
+                ' vs ', ' vs.', 'aapl', 'tsla', 'fed ', 'interest rate', 'elon', 'musk', 'pump.fun',
+                'zcash', 'aster', 'plasma', 'uni reach', 'hurricane', 'named storm', 'typhoon', 'cyclone'
+            ]
+            
+            if any(nk in title for nk in negative_keywords) or any(nk in slug for nk in negative_keywords):
+                return
+
+            # 2. POSITIVE WEATHER ONLY FILTER
+            # We explicitly exclude 'hurricane' and 'ice' as requested (unless it's 'snow ice')
+            weather_keywords = ['weather', 'temperature', 'precipitation', 'snow', 'rain', 'degree', 'forecast', 'highest temperature', 'celsius', 'fahrenheit']
+            
+            is_weather = any(wk in title for wk in weather_keywords) or any(wk in slug for wk in weather_keywords)
+            
+            # Additional safety: explicitly exclude hurricane even if title matches 'weather'
+            if 'hurricane' in title or 'hurricane' in slug:
+                is_weather = False
+            
+            if is_weather:
+                for market in markets:
+                    mid = market.get('id')
+                    if mid in seen_ids: continue
+                    
+                    outcomes = market.get('outcomes')
+                    if isinstance(outcomes, str):
+                        try: outcomes = json.loads(outcomes)
+                        except: pass
+                        
+                    prices = market.get('outcomePrices')
+                    if isinstance(prices, str):
+                        try: prices = json.loads(prices)
+                        except: pass
+                        
+                    token_ids = market.get('clobTokenIds')
+                    if isinstance(token_ids, str):
+                        try: token_ids = json.loads(token_ids)
+                        except: pass
+
+                    weather_markets.append({
+                        "id": mid,
+                        "question": market.get('question'),
+                        "slug": event.get('slug'),
+                        "outcomes": outcomes,
+                        "outcomePrices": prices,
+                        "clobTokenIds": token_ids,
+                        "endDate": market.get('endDate')
+                    })
+                    seen_ids.add(mid)
+
+        # GENERATE TARGETED SLUGS
+        cities = ["london", "new-york", "seattle", "paris", "tokyo", "san-francisco", "chicago", "miami", "austin", "los-angeles", "boston", "dallas", "denver", "houston", "las-vegas", "phoenix", "berlin", "rome", "madrid", "toronto"]
+        today = datetime.now()
+        dates = [today + timedelta(days=i) for i in range(5)]
+        
+        priority_slugs = []
+        for city in cities:
+            priority_slugs.append(f"{city}-daily-weather")
+            for d in dates:
+                month = d.strftime("%B").lower()
+                day = d.day
+                priority_slugs.append(f"highest-temperature-in-{city}-on-{month}-{day}")
+        
+        log(f"[cyan] Starting Concurrent Scan for {len(priority_slugs)} priority slugs...[/cyan]")
+
+        # CONCURRENT EXECUTION
+        with ThreadPoolExecutor(max_workers=10) as executor:
+            # 1. Targeted Slugs
+            future_to_slug = {executor.submit(self._make_request, f"{self.gamma_api_url}/events", {"slug": s}): s for s in priority_slugs}
+            
+            # 2. Broad scan pages (first 5 pages / 500 events is usually enough for daily weather)
+            future_to_offset = {executor.submit(self._make_request, f"{self.gamma_api_url}/events", {"limit": 100, "closed": "false", "offset": off}): off for off in range(0, 500, 100)}
+
+            for future in as_completed({**future_to_slug, **future_to_offset}):
+                try:
+                    data = future.result()
+                    if data:
+                        for e in data:
+                            process_event(e)
+                except:
+                    pass
+
+        log(f"[green] Scan complete. Found {len(weather_markets)} unique weather markets.[/green]")
+        return weather_markets

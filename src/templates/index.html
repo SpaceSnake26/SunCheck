@@ -1,0 +1,295 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SunCheck | Weather Intelligence</title>
+    <link rel="icon" type="image/png" href="/static/favicon.png?v=3">
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/htmx.org@1.9.10"></script>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+
+<body class="selection:bg-violet-500/30">
+
+    <!-- Navbar/Header -->
+    <nav class="border-b border-white/5 backdrop-blur-md sticky top-0 z-50">
+        <div class="container mx-auto px-6 py-4 flex justify-between items-center">
+            <div class="flex items-center gap-4">
+                <div
+                    class="w-10 h-10 bg-gradient-to-tr from-violet-600 to-blue-500 rounded-xl flex items-center justify-center shadow-lg shadow-violet-500/20">
+                    <span class="text-white font-bold text-xl">S</span>
+                </div>
+                <div>
+                    <h1
+                        class="text-xl font-bold tracking-tight bg-gradient-to-r from-white to-white/60 bg-clip-text text-transparent">
+                        SunCheck</h1>
+                    <div class="flex items-center gap-3">
+                        <span class="flex items-center text-[10px] font-medium text-white/60 uppercase tracking-widest">
+                            <span
+                                class="status-pulse {{ 'bg-emerald-500' if run_status == 'Running' else 'bg-amber-500' }}"></span>
+                            {{ run_status }}
+                        </span>
+                        <span class="text-[10px] text-white/40 font-medium uppercase tracking-widest">Last Run: {{
+                            last_run }}</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="flex items-center gap-4">
+                <button hx-post="/api/toggle_mode" hx-swap="none"
+                    onclick="setTimeout(()=>window.location.reload(), 300)"
+                    class="mode-toggle {{ 'live-mode' if live_mode else 'paper-mode' }}">
+                    <span class="mode-emoji paper-emoji">📝</span>
+                    <div class="toggle-track">
+                        <div class="toggle-handle"></div>
+                    </div>
+                    <span class="mode-emoji dollar-emoji">💵</span>
+                </button>
+                <button hx-get="/api/run" hx-swap="none" onclick="setTimeout(() => window.location.reload(), 300)"
+                    class="shimmer-button text-sm">
+                    Run Scan
+                </button>
+            </div>
+        </div>
+    </nav>
+
+    <main class="container mx-auto px-6 py-12 max-w-[1600px]">
+
+        <!-- Metrics Grid -->
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-12">
+            <div class="glass-card p-6 group">
+                <p class="text-[10px] font-bold text-white/60 uppercase tracking-[0.2em] mb-4">Portfolio Value</p>
+                <div class="flex items-end justify-between">
+                    <h2 class="text-3xl font-bold text-emerald-400 mono">${{ "%.2f"|format(total_value) }}</h2>
+                    <div class="text-[10px] text-emerald-400/50 font-bold bg-emerald-400/10 px-2 py-1 rounded">USDC
+                    </div>
+                </div>
+            </div>
+
+            <div class="glass-card p-6">
+                <p class="text-[10px] font-bold text-white/60 uppercase tracking-[0.2em] mb-4">Available Cash</p>
+                <div class="flex items-end justify-between">
+                    <h2 class="text-3xl font-bold text-white mono">${{ "%.2f"|format(cash) }}</h2>
+                </div>
+            </div>
+
+            <div class="glass-card p-6">
+                <p class="text-[10px] font-bold text-white/60 uppercase tracking-[0.2em] mb-4">Active Positions</p>
+                <div class="flex items-end justify-between">
+                    <h2 class="text-3xl font-bold text-blue-400 mono">{{ active_positions_count }}</h2>
+                    <div class="text-[10px] text-blue-400/50 font-bold bg-blue-400/10 px-2 py-1 rounded">TRADES</div>
+                </div>
+            </div>
+        </div>
+
+        <div class="grid grid-cols-1 lg:grid-cols-12 gap-8">
+
+            <!-- Left Column: Opportunities & Active -->
+            <div class="lg:col-span-8 space-y-8">
+
+                <!-- Proposed Opportunities -->
+                <section>
+                    <div class="flex justify-between items-center mb-6">
+                        <h2 class="text-lg font-bold flex items-center gap-2">
+                            Proposed Opportunities
+                            {% if proposed_trades|length > 0 %}
+                            <span class="bg-violet-500/20 text-violet-400 text-[10px] px-2 py-0.5 rounded-full">{{
+                                proposed_trades|length }}</span>
+                            {% endif %}
+                        </h2>
+
+                        <form hx-post="/api/filters" hx-trigger="change delay:500ms" hx-swap="none"
+                            class="flex gap-4 items-center px-3 py-1.5 rounded-xl bg-white/5 border border-white/5">
+                            <div class="flex items-center gap-2">
+                                <label class="text-[9px] uppercase font-bold text-white/50">Min Edge</label>
+                                <input type="number" name="min_edge" value="{{ min_edge }}" step="0.05" min="0"
+                                    class="w-12 bg-transparent text-white text-[10px] font-bold border-none p-0 focus:ring-0">
+                            </div>
+                            <div class="w-px h-3 bg-white/10"></div>
+                            <div class="flex items-center gap-2">
+                                <label class="text-[9px] uppercase font-bold text-white/50">Max Days</label>
+                                <input type="number" name="max_days" value="{{ max_settle_days }}" step="0.5" min="0.5"
+                                    class="w-12 bg-transparent text-white text-[10px] font-bold border-none p-0 focus:ring-0">
+                            </div>
+                        </form>
+                    </div>
+
+                    <div class="space-y-4">
+                        {% if proposed_trades|length == 0 %}
+                        <div class="glass-card p-12 text-center">
+                            <p class="text-sm text-white/40">No opportunities detected in current scan cycle.</p>
+                        </div>
+                        {% else %}
+                        {% for p in proposed_trades %}
+                        <div
+                            class="glass-card p-5 border-l-4 {{ 'border-l-emerald-500' if p.edge > 0 else 'border-l-rose-500' }}">
+                            <div class="flex flex-col md:flex-row justify-between gap-6">
+                                <div class="flex-1">
+                                    <div class="flex items-center gap-3 mb-2">
+                                        <span
+                                            class="text-[10px] font-bold bg-white/5 text-white/60 px-2 py-0.5 rounded uppercase">{{
+                                            p.signal.city }}</span>
+                                        <span
+                                            class="text-[10px] font-bold {{ 'text-emerald-400 bg-emerald-400/10' if p.edge > 0 else 'text-rose-400 bg-rose-400/10' }} px-2 py-0.5 rounded uppercase tracking-wider">Edge
+                                            {{ "%.1f"|format(p.edge * 100) }}%</span>
+                                        {% if p.is_snipe %}
+                                        <span
+                                            class="text-[10px] font-bold bg-gradient-to-r from-violet-600 to-blue-500 text-white px-2 py-0.5 rounded uppercase tracking-widest shadow-lg shadow-violet-500/20">SNIPE
+                                            {{ "%.1f"|format(p.ev) }}x</span>
+                                        {% endif %}
+                                    </div>
+                                    <h3 class="font-semibold text-white mb-3">{{ p.signal.question }}</h3>
+                                    <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+                                        <div>
+                                            <p class="text-[9px] text-white/50 uppercase font-bold mb-1">Recommendation
+                                            </p>
+                                            <p class="text-xs font-bold text-white">{{ p.outcome }}</p>
+                                        </div>
+                                        <div>
+                                            <p class="text-[9px] text-white/50 uppercase font-bold mb-1">p(mkt)</p>
+                                            <p class="text-xs font-bold text-white/80 mono">{{
+                                                "%.2f"|format(p.signal.market_prob) }}</p>
+                                        </div>
+                                        <div>
+                                            <p class="text-[9px] text-white/50 uppercase font-bold mb-1">p(api)</p>
+                                            <p class="text-xs font-bold text-violet-400 mono">{{
+                                                "%.2f"|format(p.signal.true_prob) }}</p>
+                                        </div>
+                                        <div>
+                                            <p class="text-[9px] text-white/50 uppercase font-bold mb-1">Settlement</p>
+                                            <p class="text-xs font-bold text-amber-400/80">{{ p.settles_in_hours }}h</p>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="flex flex-row md:flex-col justify-end gap-3 min-w-[120px]">
+                                    <div class="relative">
+                                        <span
+                                            class="absolute left-3 top-1/2 -translate-y-1/2 text-[10px] font-bold text-white/40">$</span>
+                                        <input type="number" id="amount-{{p.id}}" value="20" min="1" step="1"
+                                            class="w-full bg-white/5 border border-white/10 text-white text-xs pl-6 pr-3 py-2 rounded-xl focus:border-violet-500 transition-all outline-none">
+                                    </div>
+                                    <div class="flex gap-2">
+                                        <button hx-post="/api/trade/{{ p.id }}/approve" hx-include="#amount-{{p.id}}"
+                                            hx-swap="none"
+                                            class="flex-1 bg-emerald-500/10 hover:bg-emerald-500 text-emerald-400 hover:text-white text-[10px] font-black py-2 rounded-lg transition-all uppercase tracking-widest border border-emerald-500/20">
+                                            Approve
+                                        </button>
+                                        <button hx-post="/api/trade/{{ p.id }}/reject" hx-swap="none"
+                                            class="px-3 bg-white/5 hover:bg-rose-500/20 text-white/60 hover:text-rose-400 text-[10px] font-black py-2 rounded-lg transition-all border border-white/5 hover:border-rose-500/20">
+                                            ✕
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        {% endfor %}
+                        {% endif %}
+                    </div>
+                </section>
+
+                <!-- Active Trades -->
+                <section>
+                    <h2 class="text-lg font-bold mb-6 flex items-center gap-2">
+                        Active Positions
+                    </h2>
+                    <div class="glass-card overflow-hidden">
+                        {% if positions|length == 0 %}
+                        <div class="p-10 text-center text-white/40 text-sm">No open positions.</div>
+                        {% else %}
+                        <div class="overflow-x-auto">
+                            <table class="w-full text-left text-sm">
+                                <thead>
+                                    <tr
+                                        class="border-b border-white/5 text-[10px] text-white/50 uppercase font-black tracking-widest">
+                                        <th class="px-6 py-4">Contract</th>
+                                        <th class="px-6 py-4">Side</th>
+                                        <th class="px-6 py-4">Investment</th>
+                                        <th class="px-6 py-4">Value</th>
+                                        <th class="px-6 py-4">PnL</th>
+                                    </tr>
+                                </thead>
+                                <tbody class="divide-y divide-white/5">
+                                    {% for p in positions if p.status != 'CLOSED' %}
+                                    <tr class="hover:bg-white/[0.02] transition">
+                                        <td class="px-6 py-4">
+                                            <p class="font-medium text-white mb-1 line-clamp-1">{{ p.question }}</p>
+                                            <div
+                                                class="flex items-center gap-2 opacity-40 text-[9px] font-bold uppercase">
+                                                <span>{{ p.city }}</span>
+                                                <span class="w-1 h-1 bg-white/20 rounded-full"></span>
+                                                <span>p(mkt): {{ "%.2f"|format(p.cur_price) if p.cur_price is defined
+                                                    else '?' }}</span>
+                                            </div>
+                                        </td>
+                                        <td class="px-6 py-4">
+                                            <span
+                                                class="px-3 py-1 rounded-full bg-white/5 border border-white/10 text-[10px] font-black text-white/80">{{
+                                                p.outcome }}</span>
+                                        </td>
+                                        <td class="px-6 py-4 mono text-white/40 text-xs">${{
+                                            "%.2f"|format(p.amount_invested) }}</td>
+                                        <td class="px-6 py-4 mono text-white font-bold">${{
+                                            "%.2f"|format(p.cur_value) if p.cur_value is defined else '0.00' }}</td>
+                                        <td class="px-6 py-4">
+                                            <span
+                                                class="mono font-bold text-[11px] {{ 'text-emerald-400' if (p.pnl or 0) >= 0 else 'text-rose-400' }}">
+                                                {{ '+$' if (p.pnl or 0) >= 0 else '-$' }}{{ "%.2f"|format((p.pnl or
+                                                0)|abs) }}
+                                            </span>
+                                        </td>
+                                    </tr>
+                                    {% endfor %}
+                                </tbody>
+                            </table>
+                        </div>
+                        {% endif %}
+                    </div>
+                </section>
+            </div>
+
+            <!-- Right Column: Logs & History -->
+            <div class="lg:col-span-4 space-y-8">
+
+                <!-- Terminal Logs -->
+                <section>
+                    <h2 class="text-lg font-bold mb-6 text-white/80">System Logs</h2>
+                    <div class="glass-card p-4 h-[600px] flex flex-col">
+                        <div id="logs-container" hx-get="/api/logs" hx-trigger="every 2s" hx-swap="innerHTML"
+                            class="custom-scroll overflow-y-auto flex-1 space-y-2 pr-2">
+                            {% include 'logs_partial.html' %}
+                        </div>
+                    </div>
+                </section>
+
+                <!-- History Summary -->
+                <section>
+                    <div
+                        class="glass-card p-6 bg-gradient-to-br from-violet-600/10 to-blue-500/10 border-violet-500/20">
+                        <h3 class="text-xs font-black uppercase tracking-widest text-violet-400 mb-4">Historical
+                            Performance</h3>
+                        <div class="space-y-4">
+                            <div class="flex justify-between items-center">
+                                <span class="text-xs text-white/60">Total Closed</span>
+                                <span class="text-sm font-bold text-white mono">{{ (history|length) if history else 0
+                                    }}</span>
+                            </div>
+                            <div class="flex justify-between items-center">
+                                <span class="text-xs text-white/60">Success Rate</span>
+                                <span class="text-sm font-bold text-emerald-400 mono">--%</span>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+            </div>
+        </div>
+    </main>
+
+    <script>
+        // Simple auto-reload every 60s to refresh state
+        setInterval(() => window.location.reload(), 60000);
+    </script>
+</body>
+
+</html>

@@ -1,0 +1,14 @@
+[Unit]
+Description=SunCheck Weather Bot Dashboard
+After=network.target
+
+[Service]
+User=pi
+WorkingDirectory=/home/pi/suncheck
+ExecStart=/home/pi/suncheck/venv/bin/uvicorn src.server:app --host 0.0.0.0 --port 8000
+Restart=always
+RestartSec=10
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target

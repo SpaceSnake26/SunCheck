@@ -1,0 +1,5 @@
+.env
+portfolio.json
+__pycache__/
+*.pyc
+.tmp.*/

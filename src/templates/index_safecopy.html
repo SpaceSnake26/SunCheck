@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SunCheck Bot Dashboard</title>
+    <link rel="icon" type="image/png" href="/static/favicon.png">
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/htmx.org@1.9.10"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+        }
+
+        .glass {
+            background: rgba(255, 255, 255, 0.05);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+    </style>
+</head>
+
+<body class="bg-gray-900 text-white min-h-screen">
+
+    <div class="container mx-auto px-4 py-8 max-w-4xl">
+
+        <!-- Header -->
+        <div class="flex justify-between items-center mb-8">
+            <div>
+                <h1
+                    class="text-3xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-yellow-400 to-orange-500">
+                    SunCheck Bot
+                </h1>
+                <p class="text-gray-400 text-sm mt-1">Status: <span
+                        class="bg-blue-900 text-blue-300 px-2 py-0.5 rounded text-xs uppercase font-bold">{{ run_status
+                        }}</span></p>
+                <p class="text-gray-500 text-xs">Last Run: {{ last_run }}</p>
+            </div>
+            <div class="flex gap-2">
+                <button hx-get="/api/reset" hx-swap="none" onclick="setTimeout(() => window.location.reload(), 1000)"
+                    class="bg-gray-700 hover:bg-gray-600 text-white font-medium py-2 px-4 rounded-full text-sm">
+                    Reset Status
+                </button>
+                <button hx-get="/api/run" hx-swap="none" onclick="setTimeout(() => window.location.reload(), 500)"
+                    class="bg-gradient-to-r from-indigo-500 to-purple-600 hover:from-indigo-600 hover:to-purple-700 text-white font-bold py-2 px-6 rounded-full shadow-lg transform transition hover:scale-105">
+                    Run Now
+                </button>
+            </div>
+        </div>
+
+        <!-- Portfolio Cards -->
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-8">
+            <div class="glass p-6 rounded-2xl relative overflow-hidden group">
+                <div class="absolute inset-0 bg-green-500 opacity-0 group-hover:opacity-5 transition duration-500">
+                </div>
+                <h3 class="text-gray-400 text-sm font-medium">Total Value</h3>
+                <p class="text-3xl font-bold mt-2 text-green-400">${{ "%.2f"|format(total_value) }}</p>
+            </div>
+
+            <div class="glass p-6 rounded-2xl">
+                <h3 class="text-gray-400 text-sm font-medium">Cash Balance</h3>
+                <p class="text-3xl font-bold mt-2 text-white">${{ "%.2f"|format(cash) }}</p>
+            </div>
+
+            <div class="glass p-6 rounded-2xl">
+                <h3 class="text-gray-400 text-sm font-medium">Active Positions</h3>
+                <p class="text-3xl font-bold mt-2 text-blue-400">{{ active_positions_count }}</p>
+            </div>
+        </div>
+
+        <!-- Proposed Opportunities -->
+        <div class="mb-8">
+            <h2 class="text-xl font-bold mb-4 flex items-center">
+                <span class="w-2 h-2 bg-blue-400 rounded-full mr-2 animate-pulse"></span>
+                Proposed Opportunities
+            </h2>
+            <div class="glass rounded-xl overflow-hidden p-4">
+                {% if proposed_trades|length == 0 %}
+                <div class="text-center text-gray-500 text-sm">No new opportunities found yet. Click "Run Now" to scan.
+                </div>
+                {% else %}
+                <div class="grid gap-4">
+                    {% for p in proposed_trades %}
+                    <div
+                        class="bg-gray-800/50 p-4 rounded-lg flex flex-col md:flex-row justify-between items-center border border-gray-700">
+                        <div class="mb-2 md:mb-0">
+                            <h3 class="font-semibold text-gray-200">{{ p.signal.question }}</h3>
+                            <div class="text-xs text-gray-400 flex gap-4 mt-1">
+                                <span>City: {{ p.signal.city }}</span>
+                                <span>Edge: <span class="{{ 'text-green-400' if p.edge > 0 else 'text-red-400' }}">{{
+                                        "%.2f"|format(p.edge) }}</span></span>
+                                <span>Suggested: <span class="font-bold text-white">{{ p.outcome }}</span></span>
+                            </div>
+                        </div>
+                        <div class="flex gap-2">
+                            <button hx-post="/api/trade/{{ p.id }}/approve" hx-swap="none"
+                                class="bg-green-600 hover:bg-green-700 text-white text-xs font-bold py-2 px-4 rounded transition">
+                                Approve ($20)
+                            </button>
+                            <button hx-post="/api/trade/{{ p.id }}/reject" hx-swap="none"
+                                class="bg-red-600 hover:bg-red-700 text-white text-xs font-bold py-2 px-4 rounded transition">
+                                Reject
+                            </button>
+                        </div>
+                    </div>
+                    {% endfor %}
+                </div>
+                {% endif %}
+            </div>
+        </div>
+
+        <!-- Active Trades -->
+        <div class="mb-8">
+            <h2 class="text-xl font-bold mb-4 flex items-center">
+                <span class="w-2 h-2 bg-yellow-400 rounded-full mr-2"></span>
+                Active Trades
+            </h2>
+            <div class="glass rounded-xl overflow-hidden">
+                {% if positions|length == 0 %}
+                <div class="p-8 text-center text-gray-500">No active positions.</div>
+                {% else %}
+                <div class="overflow-x-auto">
+                    <table class="w-full text-left text-sm">
+                        <thead class="bg-gray-800 text-gray-400 uppercase text-xs">
+                            <tr>
+                                <th class="px-6 py-4 font-semibold">Question</th>
+                                <th class="px-6 py-4 font-semibold">Side</th>
+                                <th class="px-6 py-4 font-semibold">Invested</th>
+                            </tr>
+                        </thead>
+                        <tbody class="divide-y divide-gray-800">
+                            {% for p in positions if p.status != 'CLOSED' %}
+                            <tr class="hover:bg-gray-800/50 transition">
+                                <td class="px-6 py-4 font-medium text-gray-200">
+                                    {{ p.question }}
+                                    <div class="text-xs text-gray-500 mt-1">{{ p.city }}</div>
+                                </td>
+                                <td class="px-6 py-4">
+                                    <span class="bg-gray-700 text-white px-2 py-1 rounded text-xs font-bold">{{
+                                        p.outcome }}</span>
+                                </td>
+                                <td class="px-6 py-4 text-gray-300">
+                                    ${{ "%.2f"|format(p.amount_invested) }}
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+                {% endif %}
+            </div>
+        </div>
+
+        <!-- Past Trades (Collapsed) -->
+        <div class="mb-8">
+            <button
+                onclick="document.getElementById('past-trades-content').classList.toggle('hidden'); this.querySelector('svg').classList.toggle('rotate-180')"
+                class="w-full text-left text-xl font-bold mb-4 flex items-center justify-between group focus:outline-none">
+                <div class="flex items-center">
+                    <span class="w-2 h-2 bg-gray-500 rounded-full mr-2 group-hover:bg-gray-400 transition"></span>
+                    Past Trades
+                </div>
+                <svg xmlns="http://www.w3.org/2000/svg"
+                    class="h-5 w-5 text-gray-500 transform transition-transform duration-200" fill="none"
+                    viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
+                </svg>
+            </button>
+
+            <div id="past-trades-content" class="glass rounded-xl overflow-hidden hidden transition-all">
+                <div class="overflow-x-auto">
+                    <table class="w-full text-left text-sm">
+                        <thead class="bg-gray-800 text-gray-400 uppercase text-xs">
+                            <tr>
+                                <th class="px-6 py-4 font-semibold">Question</th>
+                                <th class="px-6 py-4 font-semibold">Side</th>
+                                <th class="px-6 py-4 font-semibold">Result</th>
+                                <th class="px-6 py-4 font-semibold">Payout</th>
+                            </tr>
+                        </thead>
+                        <tbody class="divide-y divide-gray-800">
+                            {% for p in positions if p.status == 'CLOSED' %}
+                            <tr class="hover:bg-gray-800/50 transition">
+                                <td class="px-6 py-4 font-medium text-gray-400">
+                                    {{ p.question }}
+                                    <div class="text-xs text-gray-600 mt-1">{{ p.city }}</div>
+                                </td>
+                                <td class="px-6 py-4">
+                                    <span class="bg-gray-700 text-gray-300 px-2 py-1 rounded text-xs font-bold">{{
+                                        p.outcome }}</span>
+                                </td>
+                                <td class="px-6 py-4">
+                                    <span
+                                        class="{{ 'text-green-400' if p.result == 'WON' else 'text-red-400' }} font-bold">{{
+                                        p.result }}</span>
+                                </td>
+                                <td class="px-6 py-4 text-gray-300">
+                                    ${{ "%.2f"|format(p.payout) }}
+                                </td>
+                            </tr>
+                            {% else %}
+                            <tr>
+                                <td colspan="4" class="px-6 py-4 text-center text-gray-500">No past trades yet.</td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <!-- Logs -->
+        <div class="mb-8">
+            <h2 class="text-xl font-bold mb-4 text-gray-400">Activity Log</h2>
+            <div class="glass rounded-xl p-4 h-64 overflow-y-auto text-xs font-mono text-gray-300 space-y-1">
+                {% for log in logs %}
+                <div class="border-l-2 border-gray-700 pl-3 py-1 hover:border-blue-500 hover:text-white transition">
+                    {{ log }}
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+
+    </div>
+
+    <script>
+        // Simple auto-reload every 60s to refresh state
+        setInterval(() => window.location.reload(), 60000);
+    </script>
+</body>
+
+</html>
