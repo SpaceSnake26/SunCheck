@@ -8,6 +8,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 class MarketScanner:
     def __init__(self):
         self.gamma_api_url = "https://gamma-api.polymarket.com"
+        self.session = requests.Session()
 
 
     def parse_market_title(self, title, city=None):
@@ -144,7 +145,7 @@ class MarketScanner:
         """Helper to make robust requests with retries."""
         for attempt in range(retries):
             try:
-                r = requests.get(url, params=params, timeout=15)
+                r = self.session.get(url, params=params, timeout=15)
                 r.raise_for_status()
                 return r.json()
             except Exception as e:
@@ -155,7 +156,7 @@ class MarketScanner:
                     raise e
         return None
 
-    def get_weather_markets(self, log_callback=None):
+    def get_weather_markets(self, limit=150, log_callback=None):
         """
         Fetches active markets focusing ONLY on real weather (Temp, Rain, Snow).
         Uses concurrency for speed.
@@ -218,12 +219,13 @@ class MarketScanner:
                             idx = parts.index("in") + 1
                             if idx < len(parts): city = parts[idx]
                             
-                        # 3. Check Unit Consistency
+                        # 3. Check Unit Consistency (Robust)
                         intl_cities = ["london", "paris", "tokyo", "berlin", "madrid", "rome", "dubai", "singapore", "toronto"]
-                        is_intl = any(ic in city.lower() for ic in intl_cities)
+                        is_intl = any(ic in city.lower() for ic in intl_cities) or "celsius" in title.lower() or "°c" in title.lower()
+                        is_us = any(us in city.lower() for us in ["miami", "york", "chicago", "seattle", "austin", "los angeles", "vegas"]) or "fahrenheit" in title.lower() or "°f" in title.lower()
                         
-                        if is_intl and unit == 'F': continue # Skip F for Intl
-                        if not is_intl and unit == 'C': continue # Skip C for US
+                        if is_intl and unit == 'F' and not is_us: continue 
+                        if not is_intl and unit == 'C': continue 
                     except: pass
                     # --------------------------------------------
                     
@@ -276,23 +278,20 @@ class MarketScanner:
                     optimized_slugs.append(f"highest-temperature-in-{city}-on-{df}")
                     optimized_slugs.append(f"highest-temperature-at-{city}-on-{df}")
 
-        log(f"[cyan] Scanning {len(optimized_slugs)} optimized slugs...[/cyan]")
+        log(f"[cyan] Scanning optimized queries for {len(cities)} cities + Weather Tag...[/cyan]")
         
         # CONCURRENT EXECUTION
         with ThreadPoolExecutor(max_workers=10) as executor:
-            # 1. Targeted Slugs
+            # 1. TAG SEARCH (Tag 1002 = Weather) - Primary Source - Limit increased to 250
+            future_to_tag = {executor.submit(self._make_request, f"{self.gamma_api_url}/events", {"tag_id": 1002, "active": "true", "limit": limit}): "weather_tag"}
+            
+            # 2. Targeted Queries (City-by-city) - Increased limit
+            future_to_query = {executor.submit(self._make_request, f"{self.gamma_api_url}/events", {"query": f"Highest temperature in {c}", "limit": 50}): f"query_{c}" for c in cities}
+            
+            # 3. Targeted Slugs
             future_to_slug = {executor.submit(self._make_request, f"{self.gamma_api_url}/events", {"slug": s}): s for s in optimized_slugs}
-            
-            # 2. Targeted Queries (City-by-city for the 8 cities to ensure coverage)
-            future_to_query = {executor.submit(self._make_request, f"{self.gamma_api_url}/events", {"query": f"Highest temperature in {c}", "limit": 20}): f"query_{c}" for c in cities}
-            
-            # 3. Broader scan depth (10 chunks of 100)
-            future_to_offset = {executor.submit(self._make_request, f"{self.gamma_api_url}/events", {"limit": 100, "closed": "false", "offset": off}): off for off in range(0, 1000, 100)}
-            
-            # 4. TAG SEARCH (Tag 1002 = Weather)
-            future_to_tag = {executor.submit(self._make_request, f"{self.gamma_api_url}/events", {"tag_id": 1002, "active": "true"}): "weather_tag"}
-            
-            total_futures = {**future_to_slug, **future_to_query, **future_to_offset, **future_to_tag}
+
+            total_futures = {**future_to_tag, **future_to_query, **future_to_slug}
             for future in as_completed(total_futures):
                 try:
                     data = future.result()

@@ -24,17 +24,16 @@ class PaperTrader:
         event_date = None
         
         # 1. Highest Temperature (Seattle/London style)
-        higher_match = re.search(r"highest temperature in (.+?) be (\d+).+?(?:higher|above|greater)", question, re.IGNORECASE)
-        lower_match = re.search(r"highest temperature in (.+?) be (\d+).+?(?:below|lower|less)", question, re.IGNORECASE)
-        range_match = re.search(r"highest temperature in (.+?) be between (\d+)\s*-\s*(\d+)", question, re.IGNORECASE)
-        exact_match = re.search(r"highest temperature in (.+?) be (\d+)(?:°?F|F|°?C|C)?(?:\s+on|\s*(\?|$))", question, re.IGNORECASE)
-        
-        # Fallback recursive search if prefix like "Will the" exists
-        if not exact_match and not higher_match and not range_match:
-             higher_match = re.search(r"highest temperature in (.+?) be (\d+).+?(?:higher|above|greater)", question, re.IGNORECASE)
-             lower_match = re.search(r"highest temperature in (.+?) be (\d+).+?(?:below|lower|less)", question, re.IGNORECASE)
-             range_match = re.search(r"highest temperature in (.+?) be between (\d+)\s*-\s*(\d+)", question, re.IGNORECASE)
-             exact_match = re.search(r"highest temperature in (.+?) be (\d+)(?:°?F|F|°?C|C)?(?:\s+on|\s*(\?|$))", question, re.IGNORECASE)
+        # Standardize regex for robust city and negative parsing
+        higher_pattern = r"highest temperature in (.+?)\s+be\s+(-?\d+).+?(?:higher|above|greater)"
+        lower_pattern = r"highest temperature in (.+?)\s+be\s+(-?\d+).+?(?:below|lower|less)"
+        range_pattern = r"highest temperature in (.+?)\s+be\s+between\s+(-?\d+)\s*-\s*(-?\d+)"
+        exact_pattern = r"highest temperature in (.+?)\s+be\s+(-?\d+)(?:°?F|F|°?C|C)?(?:\s+on|\s*(\?|$))"
+
+        higher_match = re.search(higher_pattern, question, re.IGNORECASE)
+        lower_match = re.search(lower_pattern, question, re.IGNORECASE)
+        range_match = re.search(range_pattern, question, re.IGNORECASE)
+        exact_match = re.search(exact_pattern, question, re.IGNORECASE)
 
         if higher_match:
             city, val, condition = higher_match.group(1).strip(), int(higher_match.group(2)), "max_temp"
@@ -64,202 +63,178 @@ class PaperTrader:
 
         return city, condition, threshold_val, event_date
 
-    def analyze_market(self, market, log=None):
-        from market_scanner import MarketScanner
-        scanner = MarketScanner()
-        
+    def analyze_market(self, market, scanner, log=None):
         question = market['question']
         end_date = market['endDate']
         slug = market.get('slug', '')
         
-        # 0. Robust City Extraction
-        slug_parts = slug.split("-")
+        # 0. Robust City Extraction from Slug
+        # Slugs: "highest-temperature-in-new-york-on-..."
         city = "unknown"
-        if "in" in slug_parts:
-            city = slug_parts[slug_parts.index("in") + 1]
-        elif "at" in slug_parts:
-            city = slug_parts[slug_parts.index("at") + 1]
+        if "highest-temperature-in-" in slug:
+            parts = slug.split("-on-")[0].split("-in-")
+            if len(parts) > 1:
+                city = parts[1].replace("-", " ")
+        elif "-in-" in slug:
+            parts = slug.split("-in-")
+            if len(parts) > 1:
+                city = parts[1].split("-")[0]
         
         if city == "unknown": return None
 
         # 1. Parsing & Date
-        _, cond_type, threshold, event_date = self.parse_question(question, end_date)
-        parsed = scanner.parse_market_title(question, city=city)
-        market_unit = parsed['unit']
+        _, cond_type, _, event_date = self.parse_question(question, end_date)
+        parsed_meta = scanner.parse_market_title(question, city=city)
+        market_unit = parsed_meta['unit']
         target_date = event_date if event_date else (end_date.split("T")[0] if end_date else None)
 
-        if not cond_type or not target_date: 
-            return None
+        if not target_date: return None
         
-        # 2. Market Strike Detection
-        # Extract the strike value the market is actually betting on
-        market_strike = None
-        if isinstance(threshold, (int, float)):
-            market_strike = int(threshold)
-        elif isinstance(threshold, tuple) and len(threshold) == 2:
-            # For ranges like 75-79, we'll check if our target falls inside
-            pass 
-        else:
-            return None
-
-        # 3. Forecast Check
-        outcome_range = (0, 100)
-        forecast_detailed = self.weather_engine.get_forecast_probability_detailed(
-            city, target_date, outcome_range, market_unit=market_unit, log=None # Silent forecast
-        )
-        
-        raw_values = forecast_detailed.get("raw_values", {})
-        if "OpenMeteo" not in raw_values:
-            return None
-            
-        om_val = raw_values["OpenMeteo"]
-        target_int = math.ceil(om_val)
-
         # Skip past events
         today_str = datetime.utcnow().strftime("%Y-%m-%d")
         if target_date < today_str: return None
 
-        # --- SMART LOGGING: Only log if this market matches our target strike ---
-        is_target_match = False
-        if market_strike == target_int:
-            is_target_match = True
-        elif isinstance(threshold, tuple) and threshold[0] <= target_int <= threshold[1]:
-            is_target_match = True
-
-        if not is_target_match:
-            return None # SILENT SKIP for non-target markets
-
-        # 4. Proximity Logic
-        if target_int == om_val: 
-            proximity = 0.0
-        else:
-            proximity = (target_int - om_val) / abs(om_val) if om_val != 0 else 0
-            
-        if proximity > 0.15:
-            if log: log(f"[{city}] REJECTED: Forecast {om_val:.2f} too far from {target_int} ({proximity*100:.1f}%)")
-            return None
-
-        if log: log(f"[{city}] STEP 1 OK: Forecast {om_val:.2f} matches Strike {target_int} (Prox: {proximity*100:.1f}%)")
-
-        # 5. Outcome & Price Check
         outcomes = market.get('outcomes', [])
         prices = market.get('outcomePrices', [])
+        token_ids = market.get('clobTokenIds', [])
         market_id = market.get('id', 'Unknown')
         
-        if log: log(f"[{city}] Checking Market {market_id} | End: {market.get('endDate')} | Outcomes: {len(outcomes)}")
-
-        if not prices or not outcomes: 
-            if log: log(f"[{city}] REJECTED: No PM data found.")
-            return None
-
-        found_idx = -1
-        
-        # Case A: Binary Market (Yes/No)
-        if len(outcomes) == 2:
-            # Explicitly find 'Yes' outcome
-            for i, o in enumerate(outcomes):
-                if str(o).lower() in ["yes", "yes!"]:
-                    found_idx = i
-                    break
-            if found_idx == -1: found_idx = 0 # Fallback
-            if log: log(f"  --> Binary Match: Outcomes {outcomes}, picking '{outcomes[found_idx]}' at index {found_idx}")
-            
-        # Case B: Categorical Market (List of temperatures)
-        else:
-            if log: log(f"[{city}] Debug: Searching Categorical outcomes for target {target_int}")
-            for i, o in enumerate(outcomes):
-                name = str(o).lower()
-                price = prices[i] if i < len(prices) else "N/A"
-                if log: log(f"  [{i}] {name} | Price: {price}")
-                
-                # Try range match first: "70-71"
-                range_match = re.search(r'(\d+)-(\d+)', name)
-                if range_match:
-                    low = int(range_match.group(1))
-                    high = int(range_match.group(2))
-                    if low <= target_int <= high:
-                        found_idx = i
-                        if log: log(f"  --> MATCH FOUND: Bucket '{name}' at index {i}")
-                        break
-                
-                # Try comparison matches: "76 or higher"
-                if "higher" in name or "above" in name or "greater" in name:
-                    comp_match = re.search(r'(\d+)', name)
-                    if comp_match and target_int >= int(comp_match.group(1)):
-                        found_idx = i
-                        if log: log(f"  --> MATCH FOUND: Comparison '{name}' at index {i}")
-                        break
-                        
-                if "below" in name or "lower" in name or "less" in name:
-                    comp_match = re.search(r'(\d+)', name)
-                    if comp_match and target_int <= int(comp_match.group(1)):
-                        found_idx = i
-                        if log: log(f"  --> MATCH FOUND: Comparison '{name}' at index {i}")
-                        break
-
-                # Fallback to simple integer exact match
-                match = re.search(r'(\d+)', name)
-                if match and int(match.group(1)) == target_int:
-                    found_idx = i
-                    if log: log(f"  --> MATCH FOUND: Exact '{name}' at index {i}")
-                    break
-        
-        if found_idx == -1:
-            if log: log(f"[{city}] REJECTED: Strike {target_int} not found in any outcome bucket.")
-            return None
-        
-        # --- V4 Final: Use Real-time CLOB Pricing ---
-        # 1. Map to Token ID
-        token_ids = market.get('clobTokenIds', [])
         if isinstance(token_ids, str):
             import json
             try: token_ids = json.loads(token_ids)
             except: pass
+
+        if not prices or not outcomes: return None
+
+        best_signal = None
         
-        token_id = None
-        if isinstance(token_ids, list) and len(token_ids) > found_idx:
-            token_id = token_ids[found_idx]
+        if log: log(f"[{city}] Evaluating {len(outcomes)} outcomes for Market {market_id}...")
+
+        # EVALUATE ALL BUCKETS
+        for i, outcome_name in enumerate(outcomes):
+            name = str(outcome_name).lower()
+            gamma_price = float(prices[i]) if i < len(prices) else 0
             
-        pm_prob = float(prices[found_idx]) # Fallback (Gamma API)
-        
-        if token_id and self.poly_client:
-            clob_data = self.poly_client.get_clob_price(token_id)
-            if clob_data and clob_data.get('price'):
-                clob_price = clob_data['price']
-                if log: log(f"  --> CLOB PRICE REFRESH: Gamma {pm_prob*100:.1f}% -> CLOB {clob_price*100:.1f}% (Best Ask)")
-                pm_prob = clob_price
-        
-        # Step 3: Check PM Price ($0.18 limit)
-        if pm_prob >= 0.18:
-            if log: log(f"[{city}] REJECTED: Real-time Price {pm_prob*100:.1f}% >= 18% (Market: {market_id})")
-            return None
+            if gamma_price < 0.01: continue
             
-        if pm_prob < 0.01:
-            return None # No liquidity
+            # --- V5: Parse bucket range ---
+            low, high = None, None
+            # Range: "70-71" or "70 - 71"
+            range_match = re.search(r'(\d+)\s*-\s*(\d+)', name)
+            if range_match:
+                low, high = float(range_match.group(1)), float(range_match.group(2))
+            
+            # Comparison: "76 or higher"
+            elif "higher" in name or "above" in name or "greater" in name:
+                comp_match = re.search(r'(-?\d+)', name)
+                if comp_match:
+                    low, high = float(comp_match.group(1)), 150.0 # Arbitrary high
+            
+            # Comparison: "below 50"
+            elif "below" in name or "lower" in name or "less" in name:
+                comp_match = re.search(r'(-?\d+)', name)
+                if comp_match:
+                    low, high = -50.0, float(comp_match.group(1)) # Arbitrary low
+            
+            # Exact/Binary: "Yes" or "75"
+            else:
+                match = re.search(r'(-?\d+)', name)
+                if match:
+                    val = float(match.group(1))
+                    low, high = val - 0.5, val + 0.5
+                elif name in ["yes", "yes!"]:
+                    # For binary 'Yes', we use the threshold from the question
+                    # e.g., "highest temperature will be 75 or higher"
+                    # In this case cond_type and threshold are parsed from question
+                    _, q_cond, q_thresh, _ = self.parse_question(question, end_date)
+                    if q_cond == "max_temp":
+                        low, high = q_thresh - 0.5, q_thresh + 0.5
+                    elif q_cond == "max_temp_below":
+                        low, high = -50.0, q_thresh
+                    elif q_cond == "temp_range":
+                        if isinstance(q_thresh, tuple): low, high = q_thresh
+                        else: low, high = q_thresh - 0.5, q_thresh + 0.5
+                    elif q_cond == "rain":
+                        low, high = 0.5, 10.0 # Standard threshold for 'Will it rain?'
+                
+            if low is None or high is None: continue
 
-        # Arbitrage FOUND!
-        if log: log(f"!!! [ARBITRAGE] Match in {city} for {target_int}!")
+            # --- V5: Compute REAL True Prob ---
+            forecast_detailed = self.weather_engine.get_forecast_probability_detailed(
+                city, target_date, (low, high), market_unit, log=None
+            )
+            true_prob = forecast_detailed.get("consensus", 0.0)
+            
+            # --- V5.1: CLOB Real-time Price Sync ---
+            # Softened pre-filter (3% instead of 5%)
+            current_price = gamma_price
+            if true_prob > (gamma_price + 0.03): 
+                # CRITICAL: Be extremely paranoid about Token ID order.
+                # Standard: Index 0 = No, Index 1 = Yes.
+                # Fallback: Assume i matches unless binary.
+                t_id = None
+                is_binary = (token_ids and len(token_ids) == 2 and outcome_name.lower() in ["yes", "no"])
+                
+                if is_binary:
+                    if outcome_name.lower() == "yes": t_id = token_ids[1]
+                    elif outcome_name.lower() == "no": t_id = token_ids[0]
+                elif token_ids and len(token_ids) > i:
+                    t_id = token_ids[i]
+                
+                if t_id and self.poly_client:
+                    clob_data = self.poly_client.get_clob_price(t_id)
+                    if clob_data and clob_data.get('price'):
+                        # Sanity Check: If CLOB price is wildly different (>0.4 diff), likely bad mapping.
+                        # Use Gamma price as fallback.
+                        diff = abs(clob_data['price'] - gamma_price)
+                        if diff > 0.4:
+                             if log: log(f"  [{name}] CLOB Price Mismatch (Gamma {gamma_price:.2f} vs CLOB {clob_data['price']:.2f}). Fallback to Gamma.")
+                             # Do NOT update current_price, keep Gamma.
+                        else:
+                             current_price = clob_data['price']
+                             if log: log(f"  [{name}] CLOB Refresh ({t_id[-4:]}): Gamma {gamma_price*100:.1f}% -> CLOB {current_price*100:.1f}%")
 
-        # Arbitrage FOUND!
-        if log: log(f"!!! [ARBITRAGE] Found opportunity in {city} for {target_int}{market_unit}!")
-        
-        true_prob = 0.99 
-        return {
-            "market_id": market['id'],
-            "question": question,
-            "city": city,
-            "true_prob": true_prob,
-            "market_prob": pm_prob,
-            "edge": true_prob - pm_prob,
-            "action": f"BUY {outcomes[found_idx]}",
-            "outcome": str(outcomes[found_idx]),
-            "source_probs": forecast_detailed.get("sources", {}),
-            "proximity_match": True,
-            "om_val": om_val,
-            "target_int": target_int
-        }
+            edge = true_prob - current_price
+            
+            # --- V5.1 Criteria: 18-cent limit + Meaningful Edge (6% instead of 10%) ---
+            if current_price < 0.18 and edge > 0.06: 
+                # --- MARKETSCANCRIT.MD Compliance: 15% Proximity check ---
+                om_val = forecast_detailed.get("raw_values", {}).get("OpenMeteo")
+                legacy_proximity_pass = False
+                if om_val is not None:
+                    dist_to_bucket = 0
+                    if low <= om_val <= high: dist_to_bucket = 0
+                    else: dist_to_bucket = min(abs(om_val - low), abs(om_val - high))
+                    
+                    if dist_to_bucket <= 0.15:
+                        legacy_proximity_pass = True
+                
+                # We prioritize proximity (Legacy Rule), but allow high-edge distribution trades
+                # V5.2: Relaxed edge (4%) if proximity passes
+                if legacy_proximity_pass or edge > 0.15:
+                    if best_signal is None or edge > best_signal['edge']:
+                        # Final sanity check: edge must be at least 4% even with proximity
+                        if edge < 0.04: continue 
+                        
+                        best_signal = {
+                            "market_id": market_id,
+                            "question": question,
+                            "city": city,
+                            "true_prob": true_prob,
+                            "market_prob": current_price,
+                            "edge": edge,
+                            "action": f"BUY {outcome_name}",
+                            "outcome": str(outcome_name),
+                            "source_probs": forecast_detailed.get("sources", {}),
+                            "om_val": om_val,
+                            "target_int": (low, high),
+                            "legacy_pass": legacy_proximity_pass
+                        }
+                        if log: log(f"  --> [OPPORTUNITY FOUND] {name} | True: {true_prob*100:.1f}% | Price: {current_price*100:.1f}% | Edge: {edge*100:.1f}% | Proximity: {legacy_proximity_pass}")
+                elif edge > 0.02 and log:
+                     log(f"  [NEAR MISS] {name} | Edge: {edge*100:.1f}% | Price: {current_price} (Limit 0.18) | Prox: {legacy_proximity_pass}")
 
-        return None
+        return best_signal
 
     def check_trade_outcome(self, question, end_date):
         """Checks if the trade won or lost based on actual weather data."""

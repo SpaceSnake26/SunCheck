@@ -22,6 +22,7 @@ class BotService:
         self.run_status = "Idle"
         self.logs = []
         self.proposed_trades = [] # List of dicts
+        self.proposals_by_id = {} # O(1) lookup
         
         # UI Filters (Defaults)
         self.min_edge = 0.05
@@ -59,7 +60,8 @@ class BotService:
             self.log("Step 2/3: Scanning for weather opportunities...")
             # We use get_weather_markets and then analyze so we don't miss anything 
             # (scan_for_snipes is too restrictive for general use)
-            markets = self.scanner.get_weather_markets(log_callback=self.log)
+            # V5.3: Increase limit to 250 to ensure we catch all valid markets (Toronto often buried)
+            markets = self.scanner.get_weather_markets(limit=250, log_callback=self.log)
             
             if not markets:
                 self.log("No markets found.")
@@ -68,11 +70,11 @@ class BotService:
                 
                 new_proposals = 0
                 for market in markets:
-                    # Duplicate Check (Active Positions & Already Proposed)
                     mid = market["id"]
+                    # Duplicate Check (Active Positions & Already Proposed)
                     if any(p["market_id"] == mid and p.get("status") != "CLOSED" for p in self.portfolio.data["positions"]):
                         continue
-                    if any(prop["market"]["id"] == mid for prop in self.proposed_trades):
+                    if mid in self.proposals_by_id:
                         continue
                     
                     # --- FRESH PRICE UPDATE REMOVED ---
@@ -81,7 +83,14 @@ class BotService:
                     # --------------------------
                     # --------------------------
 
-                    signal = self.trader.analyze_market(market, log=self.log)
+                    # Rule 5 Rejection Logging: We pass a specialized logger to capture rejections
+                    # (This requires updating PaperTrader or just relying on its internal logging if verbose)
+                    # For now, we rely on the main log, but we ensure we catch ANY signal.
+                    
+                    # Rule 5 Rejection Logging: Pass log callback
+                    # The goal is to see WHY a market is rejected if it's close.
+                    signal = self.trader.analyze_market(market, self.scanner, log=self.log)
+                    
                     if signal:
                         # NEW CRITERIA: 15%/15% logic already passed in analyze_market
                         market_price_yes = float(signal['market_prob'])
@@ -119,9 +128,7 @@ class BotService:
                         new_proposals += 1
                         self.log(f"!!! [OPPORTUNITY] Found arbitrage in {signal['city']} at {signal['target_int']}! Price: {market_price_yes*100:.1f}%")
 
-                self.log(f"Cycle complete. {new_proposals} new opportunities found.")
-
-                self.log(f"Cycle complete. {new_proposals} new opportunities found.")
+                self.log(f"Cycle complete. Scanned: {len(markets)}, New: {new_proposals}")
 
         except Exception as e:
             self.log(f"ERR: Error in cycle: {e}")

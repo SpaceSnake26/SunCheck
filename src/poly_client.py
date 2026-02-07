@@ -13,6 +13,8 @@ class PolyClient:
         self.host = "https://clob.polymarket.com"
         self.chain_id = POLYGON # 137
         self.client = None # Initialize client to None by default
+        import requests
+        self.session = requests.Session()
 
         try:
             # 1. Load and clean all credentials
@@ -184,8 +186,7 @@ class PolyClient:
         """
         try:
             url = f"{self.host}/book?token_id={token_id}"
-            import requests
-            resp = requests.get(url, timeout=5)
+            resp = self.session.get(url, timeout=5)
             if resp.status_code == 200:
                 data = resp.json()
                 # Best Ask is what you pay to buy (Buy Yes)

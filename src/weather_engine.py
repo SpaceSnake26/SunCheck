@@ -9,6 +9,7 @@ class WeatherEngine:
     def __init__(self):
         self.open_meteo_url = "https://api.open-meteo.com/v1/forecast"
         self.visual_crossing_url = "https://weather.visualcrossing.com/VisualCrossingWebServices/rest/services/timeline"
+        self.session = requests.Session()
         
         # KEY CHANGE: Map cities to exact NWS Station Coordinates (Polymarket standard)
         self.station_map = {
@@ -62,10 +63,10 @@ class WeatherEngine:
         
         if city in self.geo_cache: return self.geo_cache[city]
         try:
-            r = requests.get("https://geocoding-api.open-meteo.com/v1/search", params={"name": city, "count": 1}, timeout=10)
+            r = self.session.get("https://geocoding-api.open-meteo.com/v1/search", params={"name": city, "count": 1}, timeout=10)
             data = r.json()
             if "results" in data:
-                res = (data["results"][0]["latitude"], data["results"][0]["longitude"])
+                res = (round(data["results"][0]["latitude"], 4), round(data["results"][0]["longitude"], 4))
                 self.geo_cache[city] = res
                 return res
         except: pass
@@ -77,11 +78,16 @@ class WeatherEngine:
     def _f_to_c(self, fahrenheit):
         return (fahrenheit - 32) * 5/9
 
-    def _calculate_prob_cdf(self, forecast_val, threshold_low, threshold_high, sigma=2.5):
+    def _calculate_prob_cdf(self, forecast_val, threshold_low, threshold_high, sigma=None, lead_days=0):
         """
         Uses CDF to find probability that value falls between low and high.
-        Increased Sigma to 2.5 to account for forecast error margin 2-3 days out.
+        Dynamic Sigma scales with lead time.
         """
+        if sigma is None:
+            # V5.2: Optimistic Sigma (base 0.8 + 0.3 per day)
+            # This allows for higher peak probabilities on near-term forecasts.
+            sigma = 0.8 + (0.3 * lead_days)
+            
         def phi(x): return 0.5 * (1 + math.erf(x / math.sqrt(2)))
         
         try:
@@ -98,7 +104,7 @@ class WeatherEngine:
 
         try:
             params = {"latitude": lat, "longitude": lon, "daily": ["temperature_2m_max", "precipitation_sum"], "timezone": "auto"}
-            r = requests.get(self.open_meteo_url, params=params, timeout=10)
+            r = self.session.get(self.open_meteo_url, params=params, timeout=10)
             data = r.json().get("daily", {})
             times = data.get("time", [])
             if target_date in times:
@@ -114,10 +120,10 @@ class WeatherEngine:
         """Using NWS Grid endpoints for US precision."""
         try:
             # 1. Get Point
-            r = requests.get(f"https://api.weather.gov/points/{lat},{lon}", timeout=10)
+            r = self.session.get(f"https://api.weather.gov/points/{lat},{lon}", timeout=10)
             forecast_url = r.json()["properties"]["forecast"]
             # 2. Get Forecast
-            f_resp = requests.get(forecast_url, timeout=10)
+            f_resp = self.session.get(forecast_url, timeout=10)
             periods = f_resp.json()["properties"]["periods"]
             for p in periods:
                 if target_date in p["startTime"]:
@@ -129,13 +135,13 @@ class WeatherEngine:
     def get_visual_crossing_forecast(self, lat, lon, target_date):
         """Source 2: Visual Crossing (Global)"""
         import os
-        # Try primary key, then fallback example key
-        keys = [os.getenv("VISUAL_CROSSING_KEY"), "PPKBBJ7637X5SNDUG6HZA23X7", "UR6S5U5D67K4J9H4F5F5"]
+        # Try primary key from environment
+        keys = [os.getenv("VISUAL_CROSSING_KEY")]
         for api_key in keys:
             if not api_key: continue
             try:
                 url = f"{self.visual_crossing_url}/{lat},{lon}/{target_date}/{target_date}?key={api_key}&unitGroup=metric&include=days"
-                r = requests.get(url, timeout=10)
+                r = self.session.get(url, timeout=10)
                 if r.status_code == 200:
                     day_data = r.json().get("days", [{}])[0]
                     return {"temp": day_data.get("tempmax"), "precip": day_data.get("precip")}
@@ -166,7 +172,16 @@ class WeatherEngine:
                 
                 low = float(outcome_range[0])
                 high = float(outcome_range[1])
-                return self._calculate_prob_cdf(temp, low - 0.5, high + 0.5)
+                
+                # Calculate Lead Days
+                try:
+                    target_dt = datetime.strptime(target_date, "%Y-%m-%d")
+                    today_dt = datetime.utcnow()
+                    lead_days = max(0, (target_dt - today_dt).days)
+                except:
+                    lead_days = 0
+                    
+                return self._calculate_prob_cdf(temp, low, high, lead_days=lead_days)
             return None
 
         # 1. Open-Meteo
@@ -232,7 +247,7 @@ class WeatherEngine:
         # Source 2: Open-Meteo (Global / Fallback)
         try:
             params = {"latitude": lat, "longitude": lon, "daily": ["temperature_2m_max", "precipitation_sum"], "past_days": 14}
-            r = requests.get(self.open_meteo_url, params=params, timeout=10)
+            r = self.session.get(self.open_meteo_url, params=params, timeout=10)
             data = r.json().get("daily", {})
             times = data.get("time", [])
             if target_date in times:
