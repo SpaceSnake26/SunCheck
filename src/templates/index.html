@@ -92,8 +92,8 @@
                 <!-- Proposed Opportunities -->
                 <section>
                     <div class="flex justify-between items-center mb-6">
-                        <h2 class="text-lg font-bold flex items-center gap-2">
-                            Proposed Opportunities
+                        <h2 class="text-lg font-bold flex items-center gap-2 text-white/90">
+                            proposed opportunities
                             {% if proposed_trades|length > 0 %}
                             <span class="bg-violet-500/20 text-violet-400 text-[10px] px-2 py-0.5 rounded-full">{{
                                 proposed_trades|length }}</span>
@@ -103,13 +103,13 @@
                         <form hx-post="/api/filters" hx-trigger="change delay:500ms" hx-swap="none"
                             class="flex gap-4 items-center px-3 py-1.5 rounded-xl bg-white/5 border border-white/5">
                             <div class="flex items-center gap-2">
-                                <label class="text-[9px] uppercase font-bold text-white/50">Min Edge</label>
+                                <label class="text-[9px] uppercase font-bold text-white/50">min edge</label>
                                 <input type="number" name="min_edge" value="{{ min_edge }}" step="0.05" min="0"
                                     class="w-12 bg-transparent text-white text-[10px] font-bold border-none p-0 focus:ring-0">
                             </div>
                             <div class="w-px h-3 bg-white/10"></div>
                             <div class="flex items-center gap-2">
-                                <label class="text-[9px] uppercase font-bold text-white/50">Max Days</label>
+                                <label class="text-[9px] uppercase font-bold text-white/50">max days</label>
                                 <input type="number" name="max_days" value="{{ max_settle_days }}" step="0.5" min="0.5"
                                     class="w-12 bg-transparent text-white text-[10px] font-bold border-none p-0 focus:ring-0">
                             </div>
@@ -119,7 +119,7 @@
                     <div class="space-y-4">
                         {% if proposed_trades|length == 0 %}
                         <div class="glass-card p-12 text-center">
-                            <p class="text-sm text-white/40">No opportunities detected in current scan cycle.</p>
+                            <p class="text-sm text-white/40">no opportunities detected in current scan cycle.</p>
                         </div>
                         {% else %}
                         {% for p in proposed_trades %}
@@ -132,18 +132,18 @@
                                             class="text-[10px] font-bold bg-white/5 text-white/60 px-2 py-0.5 rounded uppercase">{{
                                             p.signal.city }}</span>
                                         <span
-                                            class="text-[10px] font-bold {{ 'text-emerald-400 bg-emerald-400/10' if p.edge > 0 else 'text-rose-400 bg-rose-400/10' }} px-2 py-0.5 rounded uppercase tracking-wider">Edge
+                                            class="text-[10px] font-bold {{ 'text-emerald-400 bg-emerald-400/10' if p.edge > 0 else 'text-rose-400 bg-rose-400/10' }} px-2 py-0.5 rounded uppercase tracking-wider">edge
                                             {{ "%.1f"|format(p.edge * 100) }}%</span>
                                         {% if p.is_snipe %}
                                         <span
-                                            class="text-[10px] font-bold bg-gradient-to-r from-violet-600 to-blue-500 text-white px-2 py-0.5 rounded uppercase tracking-widest shadow-lg shadow-violet-500/20">SNIPE
+                                            class="text-[10px] font-bold bg-gradient-to-r from-violet-600 to-blue-500 text-white px-2 py-0.5 rounded uppercase tracking-widest shadow-lg shadow-violet-500/20">snipe
                                             {{ "%.1f"|format(p.ev) }}x</span>
                                         {% endif %}
                                     </div>
                                     <h3 class="font-semibold text-white mb-3">{{ p.signal.question }}</h3>
-                                    <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+                                    <div class="grid grid-cols-2 md:grid-cols-5 gap-4">
                                         <div>
-                                            <p class="text-[9px] text-white/50 uppercase font-bold mb-1">Recommendation
+                                            <p class="text-[9px] text-white/50 uppercase font-bold mb-1">recommendation
                                             </p>
                                             <p class="text-xs font-bold text-white">{{ p.outcome }}</p>
                                         </div>
@@ -156,10 +156,34 @@
                                             <p class="text-[9px] text-white/50 uppercase font-bold mb-1">p(api)</p>
                                             <p class="text-xs font-bold text-violet-400 mono">{{
                                                 "%.2f"|format(p.signal.true_prob) }}</p>
+                                            <div class="flex gap-1.5 mt-1">
+                                                {% if p.signal.source_probs.OpenMeteo is defined %}
+                                                <span class="text-[8px] text-white/30 font-bold uppercase">om: {{
+                                                    "%.2f"|format(p.signal.source_probs.OpenMeteo) }}</span>
+                                                {% endif %}
+                                                {% if p.signal.source_probs.NWS is defined %}
+                                                <span class="text-[8px] text-white/30 font-bold uppercase">nws: {{
+                                                    "%.2f"|format(p.signal.source_probs.NWS) }}</span>
+                                                {% endif %}
+                                                {% if p.signal.source_probs.VisualCrossing is defined %}
+                                                <span class="text-[8px] text-white/30 font-bold uppercase">vc: {{
+                                                    "%.2f"|format(p.signal.source_probs.VisualCrossing) }}</span>
+                                                {% endif %}
+                                            </div>
                                         </div>
                                         <div>
-                                            <p class="text-[9px] text-white/50 uppercase font-bold mb-1">Settlement</p>
-                                            <p class="text-xs font-bold text-amber-400/80">{{ p.settles_in_hours }}h</p>
+                                            <p class="text-[9px] text-white/50 uppercase font-bold mb-1">delta(api)</p>
+                                            <p
+                                                class="text-xs font-bold {{ 'text-orange-400' if p.delta_api is defined and p.delta_api and p.delta_api > 0.15 else 'text-white/60' }} mono">
+                                                {{ "%.2f"|format(p.delta_api) if (p.delta_api is defined and p.delta_api
+                                                is not none) else 'N/A' }}
+                                            </p>
+                                        </div>
+                                        <div>
+                                            <p class="text-[9px] text-white/50 uppercase font-bold mb-1">settlement</p>
+                                            <!-- Fixed 'Resolvingh' typo by checking if value is 'Resolving' string -->
+                                            <p class="text-xs font-bold text-amber-400/80">{{ p.settles_in_hours }}{{
+                                                'h' if p.settles_in_hours != 'Resolving' else '' }}</p>
                                         </div>
                                     </div>
                                 </div>
@@ -174,7 +198,7 @@
                                         <button hx-post="/api/trade/{{ p.id }}/approve" hx-include="#amount-{{p.id}}"
                                             hx-swap="none"
                                             class="flex-1 bg-emerald-500/10 hover:bg-emerald-500 text-emerald-400 hover:text-white text-[10px] font-black py-2 rounded-lg transition-all uppercase tracking-widest border border-emerald-500/20">
-                                            Approve
+                                            approve
                                         </button>
                                         <button hx-post="/api/trade/{{ p.id }}/reject" hx-swap="none"
                                             class="px-3 bg-white/5 hover:bg-rose-500/20 text-white/60 hover:text-rose-400 text-[10px] font-black py-2 rounded-lg transition-all border border-white/5 hover:border-rose-500/20">
@@ -191,23 +215,23 @@
 
                 <!-- Active Trades -->
                 <section>
-                    <h2 class="text-lg font-bold mb-6 flex items-center gap-2">
-                        Active Positions
+                    <h2 class="text-lg font-bold mb-6 flex items-center gap-2 text-white/90">
+                        active positions
                     </h2>
                     <div class="glass-card overflow-hidden">
                         {% if positions|length == 0 %}
-                        <div class="p-10 text-center text-white/40 text-sm">No open positions.</div>
+                        <div class="p-10 text-center text-white/40 text-sm">no open positions.</div>
                         {% else %}
                         <div class="overflow-x-auto">
                             <table class="w-full text-left text-sm">
                                 <thead>
                                     <tr
                                         class="border-b border-white/5 text-[10px] text-white/50 uppercase font-black tracking-widest">
-                                        <th class="px-6 py-4">Contract</th>
-                                        <th class="px-6 py-4">Side</th>
-                                        <th class="px-6 py-4">Investment</th>
-                                        <th class="px-6 py-4">Value</th>
-                                        <th class="px-6 py-4">PnL</th>
+                                        <th class="px-6 py-4">contract</th>
+                                        <th class="px-6 py-4">side</th>
+                                        <th class="px-6 py-4">investment</th>
+                                        <th class="px-6 py-4">value</th>
+                                        <th class="px-6 py-4">pnl</th>
                                     </tr>
                                 </thead>
                                 <tbody class="divide-y divide-white/5">
@@ -254,7 +278,7 @@
 
                 <!-- Terminal Logs -->
                 <section>
-                    <h2 class="text-lg font-bold mb-6 text-white/80">System Logs</h2>
+                    <h2 class="text-lg font-bold mb-6 text-white/80">system logs</h2>
                     <div class="glass-card p-4 h-[600px] flex flex-col">
                         <div id="logs-container" hx-get="/api/logs" hx-trigger="every 2s" hx-swap="innerHTML"
                             class="custom-scroll overflow-y-auto flex-1 space-y-2 pr-2">
@@ -267,16 +291,16 @@
                 <section>
                     <div
                         class="glass-card p-6 bg-gradient-to-br from-violet-600/10 to-blue-500/10 border-violet-500/20">
-                        <h3 class="text-xs font-black uppercase tracking-widest text-violet-400 mb-4">Historical
-                            Performance</h3>
+                        <h3 class="text-xs font-black uppercase tracking-widest text-violet-400 mb-4">historical
+                            performance</h3>
                         <div class="space-y-4">
                             <div class="flex justify-between items-center">
-                                <span class="text-xs text-white/60">Total Closed</span>
+                                <span class="text-xs text-white/60">total closed</span>
                                 <span class="text-sm font-bold text-white mono">{{ (history|length) if history else 0
                                     }}</span>
                             </div>
                             <div class="flex justify-between items-center">
-                                <span class="text-xs text-white/60">Success Rate</span>
+                                <span class="text-xs text-white/60">success rate</span>
                                 <span class="text-sm font-bold text-emerald-400 mono">--%</span>
                             </div>
                         </div>

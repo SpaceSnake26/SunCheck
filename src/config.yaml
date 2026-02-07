@@ -1,0 +1,12 @@
+bankroll_usd: 1000
+edge_threshold: 0.15
+close_call_delta: 0.5
+sigma: 1.0
+polling_interval_minutes: 60
+
+# Optional: Telegram Notifications
+telegram_token: ""
+telegram_chat_id: ""
+
+# City Coordinates are handled internally in openmeteo_client.py 
+# but can be overridden or expanded here in future versions.

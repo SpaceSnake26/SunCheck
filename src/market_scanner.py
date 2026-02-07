@@ -26,7 +26,7 @@ class MarketScanner:
         
         # Default based on city if not explicit
         if unit is None and city:
-            international_cities = ["london", "paris", "tokyo", "berlin", "madrid", "rome"]
+            international_cities = ["london", "paris", "tokyo", "berlin", "madrid", "rome", "seoul", "toronto", "buenos-aires"]
             if any(ic in city.lower() for ic in international_cities):
                 unit = "C"
             else:
@@ -81,6 +81,17 @@ class MarketScanner:
                 city = "unknown"
                 
             if city == "unknown": continue 
+            
+            # --- STRICT UNIT FILTER ---
+            # Reject if unit doesn't match city region
+            intl_cities = ["london", "paris", "tokyo", "berlin", "madrid", "rome", "dubai", "singapore", "toronto"]
+            is_intl = any(ic in city.lower() for ic in intl_cities)
+            
+            if is_intl and parsed['unit'] == 'F':
+                continue # Skip F markets for Intl
+            if not is_intl and parsed['unit'] == 'C':
+                continue # Skip C markets for US (mostly)
+            # --------------------------
 
             # Get Forecast from Engine
             prob = weather_engine.get_forecast_probability(
@@ -175,18 +186,46 @@ class MarketScanner:
 
             # 2. POSITIVE WEATHER ONLY FILTER
             # We explicitly exclude 'hurricane' and 'ice' as requested (unless it's 'snow ice')
-            weather_keywords = ['weather', 'temperature', 'precipitation', 'snow', 'rain', 'degree', 'forecast', 'highest temperature', 'celsius', 'fahrenheit']
+            weather_keywords = [
+                r'\bweather\b', r'\btemperature\b', r'\bprecipitation\b', 
+                r'\bsnow\b', r'\brain\b', r'\bdegree\b', r'\bforecast\b', 
+                r'\bhighest temperature\b', r'\bcelsius\b', r'\bfahrenheit\b'
+            ]
             
-            is_weather = any(wk in title for wk in weather_keywords) or any(wk in slug for wk in weather_keywords)
+            is_weather = any(re.search(wk, title, re.IGNORECASE) for wk in weather_keywords) or \
+                         any(re.search(wk, slug, re.IGNORECASE) for wk in weather_keywords)
             
-            # Additional safety: explicitly exclude hurricane even if title matches 'weather'
-            if 'hurricane' in title or 'hurricane' in slug:
+            # Additional safety: explicitly exclude hurricane or troops/fighting even if title matches 'weather'
+            if any(nk in title or nk in slug for nk in ['hurricane', 'troops', 'fighting', 'ceasefire', 'war']):
                 is_weather = False
             
             if is_weather:
                 for market in markets:
                     mid = market.get('id')
                     if mid in seen_ids: continue
+                    
+                    # --- STRICT UNIT FILTER (Inside Fetch Loop) ---
+                    # 1. Parse Question for Unit
+                    try:
+                        parsed = self.parse_market_title(market.get('question', ''))
+                        unit = parsed.get('unit')
+                        
+                        # 2. Parse Slug for City
+                        # slug: highest-temperature-in-london-on-february-6
+                        parts = slug.split("-")
+                        city = "unknown"
+                        if "in" in parts:
+                            idx = parts.index("in") + 1
+                            if idx < len(parts): city = parts[idx]
+                            
+                        # 3. Check Unit Consistency
+                        intl_cities = ["london", "paris", "tokyo", "berlin", "madrid", "rome", "dubai", "singapore", "toronto"]
+                        is_intl = any(ic in city.lower() for ic in intl_cities)
+                        
+                        if is_intl and unit == 'F': continue # Skip F for Intl
+                        if not is_intl and unit == 'C': continue # Skip C for US
+                    except: pass
+                    # --------------------------------------------
                     
                     outcomes = market.get('outcomes')
                     if isinstance(outcomes, str):
@@ -214,30 +253,50 @@ class MarketScanner:
                     })
                     seen_ids.add(mid)
 
-        # GENERATE TARGETED SLUGS
-        cities = ["london", "new-york", "seattle", "paris", "tokyo", "san-francisco", "chicago", "miami", "austin", "los-angeles", "boston", "dallas", "denver", "houston", "las-vegas", "phoenix", "berlin", "rome", "madrid", "toronto"]
+        cities = [
+            "london", "miami", "buenos-aires", "atlanta", 
+            "seoul", "seattle", "toronto", "chicago", "dallas"
+        ]
         today = datetime.now()
-        dates = [today + timedelta(days=i) for i in range(5)]
-        
-        priority_slugs = []
+        # Look ahead 3 days to match user's previous successful discovery
+        optimized_slugs = []
         for city in cities:
-            priority_slugs.append(f"{city}-daily-weather")
-            for d in dates:
-                month = d.strftime("%B").lower()
+            optimized_slugs.append(f"{city}-daily-weather")
+            for i in range(3):
+                d = today + timedelta(days=i)
+                month = d.strftime('%B').lower()
+                year = d.year
                 day = d.day
-                priority_slugs.append(f"highest-temperature-in-{city}-on-{month}-{day}")
-        
-        log(f"[cyan] Starting Concurrent Scan for {len(priority_slugs)} priority slugs...[/cyan]")
+                
+                # Try multiple slug formats
+                date_formats = [
+                    f"{month}-{day}",
+                    f"{month}-{day:02d}",
+                    f"{month}-{day}-{year}",
+                    f"{month}-{day:02d}-{year}"
+                ]
+                for df in date_formats:
+                    optimized_slugs.append(f"highest-temperature-in-{city}-on-{df}")
+                    optimized_slugs.append(f"highest-temperature-at-{city}-on-{df}")
 
+        log(f"[cyan] Scanning {len(optimized_slugs)} optimized slugs...[/cyan]")
+        
         # CONCURRENT EXECUTION
         with ThreadPoolExecutor(max_workers=10) as executor:
             # 1. Targeted Slugs
-            future_to_slug = {executor.submit(self._make_request, f"{self.gamma_api_url}/events", {"slug": s}): s for s in priority_slugs}
+            future_to_slug = {executor.submit(self._make_request, f"{self.gamma_api_url}/events", {"slug": s}): s for s in optimized_slugs}
             
-            # 2. Broad scan pages (first 5 pages / 500 events is usually enough for daily weather)
-            future_to_offset = {executor.submit(self._make_request, f"{self.gamma_api_url}/events", {"limit": 100, "closed": "false", "offset": off}): off for off in range(0, 500, 100)}
-
-            for future in as_completed({**future_to_slug, **future_to_offset}):
+            # 2. Targeted Queries (City-by-city for the 8 cities to ensure coverage)
+            future_to_query = {executor.submit(self._make_request, f"{self.gamma_api_url}/events", {"query": f"Highest temperature in {c}", "limit": 20}): f"query_{c}" for c in cities}
+            
+            # 3. Broader scan depth (10 chunks of 100)
+            future_to_offset = {executor.submit(self._make_request, f"{self.gamma_api_url}/events", {"limit": 100, "closed": "false", "offset": off}): off for off in range(0, 1000, 100)}
+            
+            # 4. TAG SEARCH (Tag 1002 = Weather)
+            future_to_tag = {executor.submit(self._make_request, f"{self.gamma_api_url}/events", {"tag_id": 1002, "active": "true"}): "weather_tag"}
+            
+            total_futures = {**future_to_slug, **future_to_query, **future_to_offset, **future_to_tag}
+            for future in as_completed(total_futures):
                 try:
                     data = future.result()
                     if data:

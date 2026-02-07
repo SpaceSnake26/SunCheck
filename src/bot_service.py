@@ -7,6 +7,7 @@ import time
 from datetime import datetime
 import uuid
 import os
+import requests
 
 # System Mode Logic and Data Aggregation
 class BotService:
@@ -26,7 +27,7 @@ class BotService:
         self.min_edge = 0.05
         self.max_settle_days = 5.0
         
-        self.log("Bot Service Initialized.")
+        self.log("Bot Service Initialized [v2.fresh].")
 
     def log(self, message):
         """Adds a log message with timestamp."""
@@ -63,7 +64,7 @@ class BotService:
             if not markets:
                 self.log("No markets found.")
             else:
-                self.log(f"Found {len(markets)} markets. Analyzing...")
+                self.log(f"Found {len(markets)} markets. Analyzing with fresh pricing...")
                 
                 new_proposals = 0
                 for market in markets:
@@ -74,38 +75,51 @@ class BotService:
                     if any(prop["market"]["id"] == mid for prop in self.proposed_trades):
                         continue
                     
+                    # --- FRESH PRICE UPDATE REMOVED ---
+                    # Data API was returning inconsistent 1.00 prices. 
+                    # check_trade_outcome or Gamma API prices are sufficient.
+                    # --------------------------
+                    # --------------------------
+
                     signal = self.trader.analyze_market(market, log=self.log)
                     if signal:
-                        edge = signal['edge'] # This is true_prob - market_prob(YES)
+                        # NEW CRITERIA: 15%/15% logic already passed in analyze_market
+                        market_price_yes = float(signal['market_prob'])
                         
-                        # Calculate EV (Expected Value)
-                        market_price_yes = signal['market_prob']
-                        ev = signal['true_prob'] / market_price_yes if market_price_yes > 0 else 0
+                        # Calculate EV and Edge
+                        ev = signal.get('ev', 0)
+                        edge = signal.get('edge', 0)
                         
-                        # PRIORITY: High Edge or High EV (Snipes)
-                        is_snipe = (market_price_yes <= 0.12 and ev >= 2.0)
-                        is_solid_edge = (abs(edge) >= self.min_edge)
+                        # Calculate Delta(API) for the UI
+                        source_probs = signal.get("source_probs", {})
+                        om_p = source_probs.get("OpenMeteo")
+                        nws_p = source_probs.get("NWS")
+                        vc_p = source_probs.get("VisualCrossing")
                         
-                        if is_snipe or is_solid_edge:
-                            outcome = "YES" if edge > 0 else "NO"
-                            # If outcome is NO, the price we pay is the NO price (1.0 - market_price_yes)
-                            trade_price = market_price_yes if outcome == "YES" else (1.0 - market_price_yes)
-                            
-                            proposal = {
-                                "id": str(uuid.uuid4()),
-                                "market": market,
-                                "signal": signal,
-                                "outcome": outcome,
-                                "price": trade_price,
-                                "edge": edge,
-                                "ev": ev,
-                                "is_snipe": is_snipe,
-                                "timestamp": datetime.now().isoformat()
-                            }
-                            self.proposed_trades.append(proposal)
-                            new_proposals += 1
-                            type_str = "SNIPE" if is_snipe else "SIG"
-                            self.log(f"[{type_str}] {signal['city']}: {edge*100:+.1f}% Edge | EV: {ev:.1f}x")
+                        delta_api = None
+                        if om_p is not None:
+                            if nws_p is not None:
+                                delta_api = abs(om_p - nws_p) 
+                            elif vc_p is not None:
+                                delta_api = abs(om_p - vc_p)
+                        
+                        proposal = {
+                            "id": str(uuid.uuid4()),
+                            "market": market,
+                            "signal": signal,
+                            "outcome": signal.get('outcome', 'YES'),
+                            "price": market_price_yes,
+                            "edge": edge,
+                            "ev": ev,
+                            "delta_api": delta_api,
+                            "is_snipe": True,
+                            "timestamp": datetime.now().isoformat()
+                        }
+                        self.proposed_trades.append(proposal)
+                        new_proposals += 1
+                        self.log(f"!!! [OPPORTUNITY] Found arbitrage in {signal['city']} at {signal['target_int']}! Price: {market_price_yes*100:.1f}%")
+
+                self.log(f"Cycle complete. {new_proposals} new opportunities found.")
 
                 self.log(f"Cycle complete. {new_proposals} new opportunities found.")
 

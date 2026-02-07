@@ -1,4 +1,5 @@
 import re
+import math
 from datetime import datetime
 
 class PaperTrader:
@@ -26,6 +27,13 @@ class PaperTrader:
         lower_match = re.search(r"highest temperature in (.+?) be (\d+).+?(?:below|lower|less)", question, re.IGNORECASE)
         range_match = re.search(r"highest temperature in (.+?) be between (\d+)\s*-\s*(\d+)", question, re.IGNORECASE)
         exact_match = re.search(r"highest temperature in (.+?) be (\d+)(?:°?F|F|°?C|C)?(?:\s+on|\s*(\?|$))", question, re.IGNORECASE)
+        
+        # Fallback recursive search if prefix like "Will the" exists
+        if not exact_match and not higher_match and not range_match:
+             higher_match = re.search(r"highest temperature in (.+?) be (\d+).+?(?:higher|above|greater)", question, re.IGNORECASE)
+             lower_match = re.search(r"highest temperature in (.+?) be (\d+).+?(?:below|lower|less)", question, re.IGNORECASE)
+             range_match = re.search(r"highest temperature in (.+?) be between (\d+)\s*-\s*(\d+)", question, re.IGNORECASE)
+             exact_match = re.search(r"highest temperature in (.+?) be (\d+)(?:°?F|F|°?C|C)?(?:\s+on|\s*(\?|$))", question, re.IGNORECASE)
 
         if higher_match:
             city, val, condition = higher_match.group(1).strip(), int(higher_match.group(2)), "max_temp"
@@ -61,99 +69,132 @@ class PaperTrader:
         
         question = market['question']
         end_date = market['endDate']
+        slug = market.get('slug', '')
         
-        # 0. Robust City Extraction for Defaulting
-        # Extract city from slug: highest-temperature-in-chicago-on-january-30
-        slug_parts = market.get('slug', '').split("-")
+        # 0. Robust City Extraction
+        slug_parts = slug.split("-")
+        city = "unknown"
         if "in" in slug_parts:
-            idx = slug_parts.index("in") + 1
-            city_slug = slug_parts[idx]
-        else:
-            city_slug = "unknown"
-
-        # 1. Parse Question for Constraints and Unit
-        parsed = scanner.parse_market_title(question, city=city_slug)
-        city, condition, threshold, event_date = self.parse_question(question, end_date)
+            city = slug_parts[slug_parts.index("in") + 1]
+        elif "at" in slug_parts:
+            city = slug_parts[slug_parts.index("at") + 1]
         
-        # Ensure we use the scanner's unit detection for consistency
+        if city == "unknown": return None
+
+        # 1. Parsing & Date
+        _, cond_type, threshold, event_date = self.parse_question(question, end_date)
+        parsed = scanner.parse_market_title(question, city=city)
         market_unit = parsed['unit']
-        
         target_date = event_date if event_date else (end_date.split("T")[0] if end_date else None)
-        
-        if not city or not condition: return None
 
-        # 1. ALLOW SAME-DAY (Polymarket often has liquid same-day weather)
-        # We only skip if the event_date is clearly in the past
-        today_str = datetime.utcnow().strftime("%Y-%m-%d")
-        if target_date and target_date < today_str:
+        if not cond_type or not target_date: 
             return None
-
-        # 2. Extract Range
-        if condition == "temp_range":
-            outcome_range = threshold # (low, high)
-        elif condition == "max_temp":
-            outcome_range = (threshold, 150) # Assume upper bound far away
-        elif condition == "max_temp_below":
-            outcome_range = (-100, threshold) # Assume lower bound far away
-        elif condition == "rain":
-            outcome_range = (threshold, 100) # 0.5 inches or more
+        
+        # 2. Market Strike Detection
+        # Extract the strike value the market is actually betting on
+        market_strike = None
+        if isinstance(threshold, (int, float)):
+            market_strike = int(threshold)
+        elif isinstance(threshold, tuple) and len(threshold) == 2:
+            # For ranges like 75-79, we'll check if our target falls inside
+            pass 
         else:
             return None
 
-        if log: log(f"Analyzing Weather: {city} | Range: {outcome_range}°{market_unit} on {target_date}")
-        
-        # New Engine Call
-        true_prob = self.weather_engine.get_forecast_probability(
-            city, 
-            target_date, 
-            outcome_range, 
-            market_unit=market_unit, 
-            log=log
+        # 3. Forecast Check
+        outcome_range = (0, 100)
+        forecast_detailed = self.weather_engine.get_forecast_probability_detailed(
+            city, target_date, outcome_range, market_unit=market_unit, log=None # Silent forecast
         )
         
-        if true_prob is None: return None
-
-        try:
-            # FIX: Find the correct index for "Yes" price
-            # Polymarket outcomePrices map to the outcomes array
-            outcomes = market.get('outcomes', [])
-            prices = market.get('outcomePrices', [])
-            if not prices or not outcomes: return None
-            
-            yes_idx = -1
-            for i, o in enumerate(outcomes):
-                if o.lower() == "yes":
-                    yes_idx = i
-                    break
-            
-            if yes_idx == -1: return None # Not a binary YES/NO market
-            
-            market_prob = float(prices[yes_idx])
-            if market_prob < 0.01: return None
-            
-            # 2. SKIP EXTREME PRICES unless we have massive edge
-            # 2. SKIP EXTREME PRICES unless we have clear edge
-            if (market_prob <= 0.03 or market_prob >= 0.97) and (abs(true_prob - market_prob) < 0.10):
-                return None
-        except Exception as e:
-            if log: log(f"Error parsing market price: {e}")
+        raw_values = forecast_detailed.get("raw_values", {})
+        if "OpenMeteo" not in raw_values:
             return None
             
-        edge = true_prob - market_prob
-        action = "HOLD"
-        # Braver threshold for "OPPS"
-        if edge > 0.08: action = "BUY_YES"
-        elif edge < -0.08: action = "BUY_NO"
+        om_val = raw_values["OpenMeteo"]
+        target_int = math.ceil(om_val)
+
+        # Skip past events
+        today_str = datetime.utcnow().strftime("%Y-%m-%d")
+        if target_date < today_str: return None
+
+        # --- SMART LOGGING: Only log if this market matches our target strike ---
+        is_target_match = False
+        if market_strike == target_int:
+            is_target_match = True
+        elif isinstance(threshold, tuple) and threshold[0] <= target_int <= threshold[1]:
+            is_target_match = True
+
+        if not is_target_match:
+            return None # SILENT SKIP for non-target markets
+
+        # 4. Proximity Logic
+        if target_int == om_val: 
+            proximity = 0.0
+        else:
+            proximity = (target_int - om_val) / abs(om_val) if om_val != 0 else 0
             
+        if proximity > 0.15:
+            if log: log(f"[{city}] REJECTED: Forecast {om_val:.2f} too far from {target_int} ({proximity*100:.1f}%)")
+            return None
+
+        if log: log(f"[{city}] STEP 1 OK: Forecast {om_val:.2f} matches Strike {target_int} (Prox: {proximity*100:.1f}%)")
+
+        # 5. Outcome & Price Check
+        outcomes = market.get('outcomes', [])
+        prices = market.get('outcomePrices', [])
+        if not prices or not outcomes: 
+            if log: log(f"[{city}] REJECTED: No PM data found.")
+            return None
+
+        found_idx = -1
+        # Case A: Binary Market (Yes/No)
+        if len(outcomes) == 2 and outcomes[0].lower() in ["yes", "yes!"] or outcomes[1].lower() in ["no"]:
+            found_idx = 0 # Bet on YES
+        # Case B: Categorical Market (List of temperatures)
+        else:
+            for i, o in enumerate(outcomes):
+                match = re.search(r'(\d+)', str(o))
+                if match and int(match.group(1)) == target_int:
+                    found_idx = i
+                    break
+        
+        if found_idx == -1:
+            if log: log(f"[{city}] REJECTED: Strike {target_int} not found in outcomes.")
+            return None
+        
+        # Step 3: Check PM Probability (< 15%)
+        pm_prob = float(prices[found_idx])
+        if pm_prob >= 0.15:
+            if log: log(f"[{city}] REJECTED: PM Price {pm_prob*100:.1f}% >= 15%")
+            return None
+            
+        if pm_prob < 0.01:
+            return None # No liquidity
+
+        # Arbitrage FOUND!
+        if log: log(f"!!! [ARBITRAGE] Match in {city} for {target_int}!")
+
+        # Arbitrage FOUND!
+        if log: log(f"!!! [ARBITRAGE] Found opportunity in {city} for {target_int}{market_unit}!")
+        
+        true_prob = 0.99 
         return {
             "market_id": market['id'],
             "question": question,
             "city": city,
             "true_prob": true_prob,
-            "market_prob": market_prob,
-            "edge": edge,
-            "action": action
+            "market_prob": pm_prob,
+            "edge": true_prob - pm_prob,
+            "action": f"BUY {outcomes[found_idx]}",
+            "outcome": str(outcomes[found_idx]),
+            "source_probs": forecast_detailed.get("sources", {}),
+            "proximity_match": True,
+            "om_val": om_val,
+            "target_int": target_int
         }
+
+        return None
 
     def check_trade_outcome(self, question, end_date):
         """Checks if the trade won or lost based on actual weather data."""

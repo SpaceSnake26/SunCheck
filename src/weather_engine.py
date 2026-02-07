@@ -1,6 +1,8 @@
 import requests
 import math
 import time
+import json
+import os
 from datetime import datetime
 
 class WeatherEngine:
@@ -34,7 +36,24 @@ class WeatherEngine:
         }
         
         self.geo_cache = {}
-        self.forecast_cache = {} 
+        self.cache_file = os.path.join(os.path.dirname(__file__), "weather_cache.json")
+        self.forecast_cache = self._load_cache() 
+
+    def _load_cache(self):
+        if os.path.exists(self.cache_file):
+            try:
+                with open(self.cache_file, "r") as f:
+                    return json.load(f)
+            except:
+                return {}
+        return {}
+
+    def _save_cache(self):
+        try:
+            with open(self.cache_file, "w") as f:
+                json.dump(self.forecast_cache, f)
+        except:
+            pass
 
     def get_coordinates(self, city):
         city_slug = city.lower().replace(" ", "-")
@@ -73,6 +92,10 @@ class WeatherEngine:
             return 0.05
 
     def get_open_meteo_forecast(self, lat, lon, target_date):
+        cache_key = f"om_{lat}_{lon}_{target_date}"
+        if cache_key in self.forecast_cache:
+            return self.forecast_cache[cache_key]
+
         try:
             params = {"latitude": lat, "longitude": lon, "daily": ["temperature_2m_max", "precipitation_sum"], "timezone": "auto"}
             r = requests.get(self.open_meteo_url, params=params, timeout=10)
@@ -80,7 +103,10 @@ class WeatherEngine:
             times = data.get("time", [])
             if target_date in times:
                 idx = times.index(target_date)
-                return {"temp": data["temperature_2m_max"][idx], "precip": data["precipitation_sum"][idx]}
+                res = {"temp": data["temperature_2m_max"][idx], "precip": data["precipitation_sum"][idx]}
+                self.forecast_cache[cache_key] = res
+                self._save_cache()
+                return res
         except: pass
         return None
 
@@ -116,65 +142,75 @@ class WeatherEngine:
             except: pass
         return None
 
-    def get_forecast_probability(self, city, date_str, outcome_range, market_unit="F", log=None):
+    def get_forecast_probability_detailed(self, city, date_str, outcome_range, market_unit="F", log=None):
         """
-        outcome_range: tuple (low, high) e.g., (46, 47)
-        market_unit: "F" or "C"
+        Returns a dict with consensus prob AND individual source probs.
         """
         target_date = date_str.split("T")[0]
-        cache_key = (city, target_date, str(outcome_range), market_unit)
-        if cache_key in self.forecast_cache: return self.forecast_cache[cache_key]
-
         lat, lon = self.get_coordinates(city)
-        if not lat: return 0.0
+        if not lat: return {"consensus": 0.0, "sources": {}}
 
-        results = []
-        sources_used = []
-        temps_found = []
+        source_probs = {}
+        
+        # Helper to get prob for a source
+        def calc_source_prob(forecast_data, name):
+            if forecast_data and forecast_data["temp"] is not None:
+                temp = forecast_data["temp"]
+                # Unit conversion if needed
+                if name == "OpenMeteo":
+                    temp = temp if market_unit == "C" else self._c_to_f(temp)
+                elif name == "VisualCrossing":
+                    temp = temp if market_unit == "C" else self._c_to_f(temp)
+                elif name == "NWS":
+                    temp = temp if market_unit == "F" else self._f_to_c(temp)
+                
+                low = float(outcome_range[0])
+                high = float(outcome_range[1])
+                return self._calculate_prob_cdf(temp, low - 0.5, high + 0.5)
+            return None
 
-        # 1. Open-Meteo (Global)
-        om = self.get_open_meteo_forecast(lat, lon, target_date)
-        if om and om["temp"] is not None:
-            temp = om["temp"] if market_unit == "C" else self._c_to_f(om["temp"])
-            temps_found.append(temp)
-            sources_used.append("OpenMeteo")
+        # 1. Open-Meteo
+        om_data = self.get_open_meteo_forecast(lat, lon, target_date)
+        om_prob = calc_source_prob(om_data, "OpenMeteo")
+        if om_prob is not None: source_probs["OpenMeteo"] = om_prob
 
-        # 2. Visual Crossing (Global)
-        vc = self.get_visual_crossing_forecast(lat, lon, target_date)
-        if vc and vc["temp"] is not None:
-            # VC is fetched in Metric in our helper
-            temp = vc["temp"] if market_unit == "C" else self._c_to_f(vc["temp"])
-            temps_found.append(temp)
-            sources_used.append("VisualCrossing")
+        # 2. Visual Crossing
+        vc_data = self.get_visual_crossing_forecast(lat, lon, target_date)
+        vc_prob = calc_source_prob(vc_data, "VisualCrossing")
+        if vc_prob is not None: source_probs["VisualCrossing"] = vc_prob
 
-        # 3. NWS (US-Only)
+        # 3. NWS
         is_us = 24 < lat < 50 and -125 < lon < -66
+        nws_prob = None
         if is_us:
-            nws = self.get_nws_forecast(lat, lon, target_date)
-            if nws and nws["temp"] is not None:
-                # NWS gives F usually
-                temp = nws["temp"] if market_unit == "F" else self._f_to_c(nws["temp"])
-                temps_found.append(temp)
-                sources_used.append("NWS")
+            nws_data = self.get_nws_forecast(lat, lon, target_date)
+            nws_prob = calc_source_prob(nws_data, "NWS")
+            if nws_prob is not None: source_probs["NWS"] = nws_prob
 
-        if not temps_found:
-            return 0.0
+        if not source_probs:
+            return {"consensus": 0.0, "sources": {}}
 
-        # Consensus Forecast
-        avg_forecast = sum(temps_found) / len(temps_found)
+        # Consensus is average of available probs
+        consensus = sum(source_probs.values()) / len(source_probs)
         
-        # Calculate Prob for Range
-        low = float(outcome_range[0])
-        high = float(outcome_range[1])
-        # Add 0.5 buffer to bin for continuous distribution matching Polymarket integer bins
-        prob = self._calculate_prob_cdf(avg_forecast, low - 0.5, high + 0.5)
+        # KEY CHANGE: Expose RAW values for Proximity Strategy
+        raw_values = {}
+        if om_prob is not None and "temp" in om_data:
+            # Re-apply unit conversion to get the display value
+            val = om_data["temp"]
+            if market_unit == "F": val = self._c_to_f(val) 
+            raw_values["OpenMeteo"] = val
+            
+        return {
+            "consensus": consensus,
+            "sources": source_probs,
+            "raw_values": raw_values
+        }
 
-        if log:
-            sources_str = ", ".join(sources_used)
-            log(f"  - Forecast: {avg_forecast:.1f}°{market_unit} | Prob: {prob:.2f} ({len(temps_found)} sources: {sources_str})")
-        
-        self.forecast_cache[cache_key] = prob
-        return prob
+    def get_forecast_probability(self, city, date_str, outcome_range, market_unit="F", log=None):
+        """Legacy wrapper for simple prob call."""
+        res = self.get_forecast_probability_detailed(city, date_str, outcome_range, market_unit, log)
+        return res["consensus"]
 
     def get_daily_data(self, city, date_str):
         """Fetches actual daily data for settlement (Oracle)."""
