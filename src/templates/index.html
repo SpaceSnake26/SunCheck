@@ -116,100 +116,9 @@
                         </form>
                     </div>
 
-                    <div class="space-y-4">
-                        {% if proposed_trades|length == 0 %}
-                        <div class="glass-card p-12 text-center">
-                            <p class="text-sm text-white/40">no opportunities detected in current scan cycle.</p>
-                        </div>
-                        {% else %}
-                        {% for p in proposed_trades %}
-                        <div
-                            class="glass-card p-5 border-l-4 {{ 'border-l-emerald-500' if p.edge > 0 else 'border-l-rose-500' }}">
-                            <div class="flex flex-col md:flex-row justify-between gap-6">
-                                <div class="flex-1">
-                                    <div class="flex items-center gap-3 mb-2">
-                                        <span
-                                            class="text-[10px] font-bold bg-white/5 text-white/60 px-2 py-0.5 rounded uppercase">{{
-                                            p.signal.city }}</span>
-                                        <span
-                                            class="text-[10px] font-bold {{ 'text-emerald-400 bg-emerald-400/10' if p.edge > 0 else 'text-rose-400 bg-rose-400/10' }} px-2 py-0.5 rounded uppercase tracking-wider">edge
-                                            {{ "%.1f"|format(p.edge * 100) }}%</span>
-                                        {% if p.is_snipe %}
-                                        <span
-                                            class="text-[10px] font-bold bg-gradient-to-r from-violet-600 to-blue-500 text-white px-2 py-0.5 rounded uppercase tracking-widest shadow-lg shadow-violet-500/20">snipe
-                                            {{ "%.1f"|format(p.ev) }}x</span>
-                                        {% endif %}
-                                    </div>
-                                    <h3 class="font-semibold text-white mb-3">{{ p.signal.question }}</h3>
-                                    <div class="grid grid-cols-2 md:grid-cols-5 gap-4">
-                                        <div>
-                                            <p class="text-[9px] text-white/50 uppercase font-bold mb-1">recommendation
-                                            </p>
-                                            <p class="text-xs font-bold text-white">{{ p.outcome }}</p>
-                                        </div>
-                                        <div>
-                                            <p class="text-[9px] text-white/50 uppercase font-bold mb-1">p(mkt)</p>
-                                            <p class="text-xs font-bold text-white/80 mono">{{
-                                                "%.2f"|format(p.signal.market_prob) }}</p>
-                                        </div>
-                                        <div>
-                                            <p class="text-[9px] text-white/50 uppercase font-bold mb-1">p(api)</p>
-                                            <p class="text-xs font-bold text-violet-400 mono">{{
-                                                "%.2f"|format(p.signal.true_prob) }}</p>
-                                            <div class="flex gap-1.5 mt-1">
-                                                {% if p.signal.source_probs.OpenMeteo is defined %}
-                                                <span class="text-[8px] text-white/30 font-bold uppercase">om: {{
-                                                    "%.2f"|format(p.signal.source_probs.OpenMeteo) }}</span>
-                                                {% endif %}
-                                                {% if p.signal.source_probs.NWS is defined %}
-                                                <span class="text-[8px] text-white/30 font-bold uppercase">nws: {{
-                                                    "%.2f"|format(p.signal.source_probs.NWS) }}</span>
-                                                {% endif %}
-                                                {% if p.signal.source_probs.VisualCrossing is defined %}
-                                                <span class="text-[8px] text-white/30 font-bold uppercase">vc: {{
-                                                    "%.2f"|format(p.signal.source_probs.VisualCrossing) }}</span>
-                                                {% endif %}
-                                            </div>
-                                        </div>
-                                        <div>
-                                            <p class="text-[9px] text-white/50 uppercase font-bold mb-1">delta(api)</p>
-                                            <p
-                                                class="text-xs font-bold {{ 'text-orange-400' if p.delta_api is defined and p.delta_api and p.delta_api > 0.15 else 'text-white/60' }} mono">
-                                                {{ "%.2f"|format(p.delta_api) if (p.delta_api is defined and p.delta_api
-                                                is not none) else 'N/A' }}
-                                            </p>
-                                        </div>
-                                        <div>
-                                            <p class="text-[9px] text-white/50 uppercase font-bold mb-1">settlement</p>
-                                            <!-- Fixed 'Resolvingh' typo by checking if value is 'Resolving' string -->
-                                            <p class="text-xs font-bold text-amber-400/80">{{ p.settles_in_hours }}{{
-                                                'h' if p.settles_in_hours != 'Resolving' else '' }}</p>
-                                        </div>
-                                    </div>
-                                </div>
-                                <div class="flex flex-row md:flex-col justify-end gap-3 min-w-[120px]">
-                                    <div class="relative">
-                                        <span
-                                            class="absolute left-3 top-1/2 -translate-y-1/2 text-[10px] font-bold text-white/40">$</span>
-                                        <input type="number" id="amount-{{p.id}}" value="20" min="1" step="1"
-                                            class="w-full bg-white/5 border border-white/10 text-white text-xs pl-6 pr-3 py-2 rounded-xl focus:border-violet-500 transition-all outline-none">
-                                    </div>
-                                    <div class="flex gap-2">
-                                        <button hx-post="/api/trade/{{ p.id }}/approve" hx-include="#amount-{{p.id}}"
-                                            hx-swap="none"
-                                            class="flex-1 bg-emerald-500/10 hover:bg-emerald-500 text-emerald-400 hover:text-white text-[10px] font-black py-2 rounded-lg transition-all uppercase tracking-widest border border-emerald-500/20">
-                                            approve
-                                        </button>
-                                        <button hx-post="/api/trade/{{ p.id }}/reject" hx-swap="none"
-                                            class="px-3 bg-white/5 hover:bg-rose-500/20 text-white/60 hover:text-rose-400 text-[10px] font-black py-2 rounded-lg transition-all border border-white/5 hover:border-rose-500/20">
-                                            ✕
-                                        </button>
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
-                        {% endfor %}
-                        {% endif %}
+                    <div id="opportunities-container" hx-get="/api/opportunities"
+                        hx-trigger="load, refresh-opportunities from:body" hx-swap="innerHTML" class="space-y-4">
+                        {% include 'opportunities_partial.html' %}
                     </div>
                 </section>
 
@@ -280,8 +189,8 @@
                 <section>
                     <h2 class="text-lg font-bold mb-6 text-white/80">system logs</h2>
                     <div class="glass-card p-4 h-[600px] flex flex-col">
-                        <div id="logs-container" hx-get="/api/logs" hx-trigger="every 2s" hx-swap="innerHTML"
-                            class="custom-scroll overflow-y-auto flex-1 space-y-2 pr-2">
+                        <div id="logs-container" hx-get="/api/logs" hx-trigger="load, refresh-logs from:body"
+                            hx-swap="innerHTML" class="custom-scroll overflow-y-auto flex-1 space-y-2 pr-2">
                             {% include 'logs_partial.html' %}
                         </div>
                     </div>
@@ -313,6 +222,33 @@
     <script>
         // Simple auto-reload every 60s to refresh state
         setInterval(() => window.location.reload(), 60000);
+    </script>
+    <script>
+        // Custom Polling Logic: Pause when user is typing
+        setInterval(() => {
+            // Check if any input in the opportunities container is focused
+            const container = document.getElementById('opportunities-container');
+            const activeElement = document.activeElement;
+            const isInputFocused = container.contains(activeElement) && activeElement.tagName === 'INPUT';
+
+            if (!isInputFocused) {
+                document.body.dispatchEvent(new Event('refresh-opportunities'));
+            }
+        }, 2000); // 2 second interval
+    </script>
+    <script>
+        // Custom Polling Logic for Logs: Pause when hovering
+        setInterval(() => {
+            const logsContainer = document.getElementById('logs-container');
+            if (!logsContainer) return;
+
+            // Check if mouse is over the logs container
+            const isHovering = logsContainer.matches(':hover');
+
+            if (!isHovering) {
+                document.body.dispatchEvent(new Event('refresh-logs'));
+            }
+        }, 2000);
     </script>
 </body>
 

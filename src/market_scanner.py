@@ -226,23 +226,24 @@ class MarketScanner:
                         
                         if is_intl and unit == 'F' and not is_us: continue 
                         if not is_intl and unit == 'C': continue 
-                    except: pass
+                    except (KeyError, IndexError, AttributeError):
+                        pass
                     # --------------------------------------------
                     
                     outcomes = market.get('outcomes')
                     if isinstance(outcomes, str):
                         try: outcomes = json.loads(outcomes)
-                        except: pass
+                        except json.JSONDecodeError: pass
                         
                     prices = market.get('outcomePrices')
                     if isinstance(prices, str):
                         try: prices = json.loads(prices)
-                        except: pass
+                        except json.JSONDecodeError: pass
                         
                     token_ids = market.get('clobTokenIds')
                     if isinstance(token_ids, str):
                         try: token_ids = json.loads(token_ids)
-                        except: pass
+                        except json.JSONDecodeError: pass
 
                     weather_markets.append({
                         "id": mid,
@@ -298,8 +299,8 @@ class MarketScanner:
                     if data:
                         for e in data:
                             process_event(e)
-                except:
-                    pass
+                except Exception as e:
+                    print(f"Warning: Failed to process market event: {e}")
 
         log(f"[green] Scan complete. Found {len(weather_markets)} unique weather markets.[/green]")
         return weather_markets

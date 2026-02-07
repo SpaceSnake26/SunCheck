@@ -1,6 +1,5 @@
 from market_scanner import MarketScanner
 from weather_engine import WeatherEngine
-from climate_engine import ClimateEngine
 from paper_trader import PaperTrader
 from rich.console import Console
 from rich.table import Table
@@ -9,12 +8,11 @@ from portfolio import PortfolioManager
 
 def main():
     console = Console()
-    console.print("[bold blue]Starting Polymarket Weather Bot (Paper Trader with Climate Engine)...[/bold blue]")
+    console.print("[bold blue]Starting Polymarket Weather Bot (Paper Trader)...[/bold blue]")
 
     scanner = MarketScanner()
     weather = WeatherEngine()
-    climate = ClimateEngine()
-    trader = PaperTrader(weather, climate)
+    trader = PaperTrader(weather)
     portfolio = PortfolioManager()
 
     console.print("[yellow]Scanning for Weather markets...[/yellow]")

@@ -1,0 +1,79 @@
+<div class="space-y-4">
+    {% if proposed_trades|length == 0 %}
+    <div class="glass-card p-12 text-center">
+        <p class="text-sm text-white/40">no opportunities detected in current scan cycle.</p>
+    </div>
+    {% else %}
+    {% for p in proposed_trades %}
+    <div
+        class="glass-card p-5 border-l-4 border-l-transparent transition-colors duration-200 {{ 'hover:!border-l-emerald-500' if p.edge > 0 else 'hover:!border-l-rose-500' }}">
+        <div class="flex flex-col md:flex-row justify-between gap-6">
+            <div class="flex-1">
+                <div class="flex items-center gap-3 mb-2">
+                    <div class="flex flex-col">
+                        <span class="text-[10px] font-bold bg-white/5 text-white/60 px-2 py-0.5 rounded uppercase">{{
+                            p.signal.city }}</span>
+                        {% if p.city_flag %}
+                        <img src="https://flagcdn.com/16x12/{{ p.city_flag }}.png" width="16" height="12"
+                            alt="{{ p.city_flag }}" class="mt-1 ml-1 rounded-[1px] opacity-80">
+                        {% endif %}
+                    </div>
+                    <span
+                        class="text-[10px] font-bold {{ 'text-emerald-400 bg-emerald-400/10' if p.edge > 0 else 'text-rose-400 bg-rose-400/10' }} px-2 py-0.5 rounded uppercase tracking-wider">edge
+                        {{ "%.1f"|format(p.edge * 100) }}%</span>
+                </div>
+                <h3 class="font-semibold text-white mb-3">{{ p.signal.question }}</h3>
+                <div class="grid grid-cols-2 md:grid-cols-5 gap-4">
+                    <div>
+                        <p class="text-[9px] text-white/50 uppercase font-bold mb-1">recommendation</p>
+                        <p class="text-xs font-bold text-white">{{ p.outcome }}</p>
+                    </div>
+                    <div>
+                        <p class="text-[9px] text-white/50 uppercase font-bold mb-1">vale(api)</p>
+                        <p class="text-xs font-bold text-violet-400 mono">{{ "%.1f"|format(p.vale_api) if p.vale_api is
+                            not none else '?' }}</p>
+                    </div>
+                    <div>
+                        <p class="text-[9px] text-white/50 uppercase font-bold mb-1">int(pm)</p>
+                        <p class="text-xs font-bold text-white/80 mono">{{ p.int_pm }}</p>
+                    </div>
+                    <div>
+                        <p class="text-[9px] text-white/50 uppercase font-bold mb-1">delta(api)</p>
+                        <p
+                            class="text-xs font-bold {{ 'text-emerald-400' if p.delta_api is defined and p.delta_api and p.delta_api > 1.0 else 'text-amber-400' }} mono">
+                            {{ "%.1f"|format(p.delta_api) if (p.delta_api is defined and p.delta_api is not none) else
+                            'N/A' }}
+                        </p>
+                    </div>
+                    <div>
+                        <p class="text-[9px] text-white/50 uppercase font-bold mb-1">settlement</p>
+                        <!-- Removed 'h' suffix logic as backend now returns clean number or string -->
+                        <p class="text-xs font-bold text-amber-400/80">{{ p.settles_in_hours }}{{ 'h' if
+                            p.settles_in_hours != 'Resolving' else '' }}</p>
+                    </div>
+                </div>
+            </div>
+            <div class="flex flex-row md:flex-col justify-end gap-3 min-w-[120px]">
+                <div class="relative">
+                    <span class="absolute left-3 top-1/2 -translate-y-1/2 text-[10px] font-bold text-white/40">$</span>
+                    <input type="number" id="amount-{{p.id}}" placeholder="Bet amount" min="1" step="1"
+                        class="w-full bg-white/5 border border-white/10 text-white text-xs pl-6 pr-3 py-2 rounded-xl focus:border-violet-500 transition-all outline-none">
+                </div>
+                <div class="flex gap-2">
+                    <button hx-post="/api/trade/{{ p.id }}/approve" hx-include="#amount-{{p.id}}" hx-swap="none"
+                        hx-on::after-request="htmx.trigger('#opportunities-container', 'refresh')"
+                        class="flex-1 bg-emerald-500/10 hover:bg-emerald-500 text-emerald-400 hover:text-white text-[10px] font-black py-2 rounded-lg transition-all uppercase tracking-widest border border-emerald-500/20">
+                        approve
+                    </button>
+                    <button hx-post="/api/trade/{{ p.id }}/reject" hx-swap="none"
+                        hx-on::after-request="htmx.trigger('#opportunities-container', 'refresh')"
+                        class="px-3 bg-white/5 hover:bg-rose-500/20 text-white/60 hover:text-rose-400 text-[10px] font-black py-2 rounded-lg transition-all border border-white/5 hover:border-rose-500/20">
+                        ✕
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+    {% endfor %}
+    {% endif %}
+</div>

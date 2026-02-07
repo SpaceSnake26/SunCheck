@@ -3,6 +3,7 @@ from weather_engine import WeatherEngine
 from paper_trader import PaperTrader
 from portfolio import PortfolioManager
 from poly_client import PolyClient
+from notifier import Notifier, NotificationType
 import time
 from datetime import datetime
 import uuid
@@ -28,6 +29,9 @@ class BotService:
         self.min_edge = 0.05
         self.max_settle_days = 5.0
         
+        # Initialize notifier with log callback
+        self.notifier = Notifier(log_callback=self._add_log_entry)
+        
         self.log("Bot Service Initialized [v2.fresh].")
 
     def log(self, message):
@@ -35,7 +39,11 @@ class BotService:
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         entry = f"[{timestamp}] {message}"
         print(entry)
-        self.logs.insert(0, entry) # Prepend for newest first
+        self._add_log_entry(entry)
+    
+    def _add_log_entry(self, entry):
+        """Internal method to add pre-formatted log entry."""
+        self.logs.insert(0, entry)  # Prepend for newest first
         if len(self.logs) > 100:
             self.logs.pop()
 
@@ -126,7 +134,11 @@ class BotService:
                         }
                         self.proposed_trades.append(proposal)
                         new_proposals += 1
-                        self.log(f"!!! [OPPORTUNITY] Found arbitrage in {signal['city']} at {signal['target_int']}! Price: {market_price_yes*100:.1f}%")
+                        # Use notifier for opportunity alerts
+                        self.notifier.opportunity(
+                            f"Found arbitrage in {signal['city']} at {signal['target_int']}! "
+                            f"Price: {market_price_yes*100:.1f}% | Edge: {edge*100:.1f}%"
+                        )
 
                 self.log(f"Cycle complete. Scanned: {len(markets)}, New: {new_proposals}")
 
@@ -160,7 +172,7 @@ class BotService:
             # 1. Execute Real Trade via PolyClient
             success, msg = self.poly_client.execute_trade(market, outcome, price, amount)
             if success:
-                self.log(f"LIVE EXECUTION SUCCESS: {outcome} on {city} | {msg}")
+                self.notifier.trade(f"LIVE EXECUTION: {outcome} on {city} @ ${amount:.2f} | {msg}")
                 # 2. Record in local portfolio for history/visibility (without deducting paper cash)
                 self.portfolio.record_live_trade(market, outcome, price, amount, edge, market_prob=market_prob, true_prob=true_prob)
                 self.proposed_trades.remove(proposal)
@@ -171,7 +183,7 @@ class BotService:
         else:
             # Paper Trade
             if self.portfolio.execute_trade(market, outcome, price, amount, edge, market_prob=market_prob, true_prob=true_prob):
-                self.log(f"PAPER EXECUTION: {outcome} on {city}")
+                self.notifier.trade(f"PAPER EXECUTION: {outcome} on {city} @ ${amount:.2f}")
                 self.proposed_trades.remove(proposal)
                 return True, "Paper Trade Executed"
             else:
@@ -187,10 +199,8 @@ class BotService:
                 return True
         return False
 
-    def get_context(self):
-        """Returns context for the dashboard with dynamic filtering."""
-        status = self.portfolio.get_status()
-        
+    def get_opportunities_fast(self):
+        """Returns filtered opportunities for fast polling."""
         # 1. Calculate "Settles In" and prepare list
         processed_trades = []
         from datetime import timezone
@@ -211,14 +221,46 @@ class BotService:
                         p['settles_in_hours'] = "Resolving"
                         p['settles_in_days'] = 0
                     else:
-                        p['settles_in_hours'] = f"{int(hours_left)}h"
+                        p['settles_in_hours'] = f"{int(hours_left)}" # Removed 'h' to avoid double 'hh'
                         p['settles_in_days'] = hours_left / 24
-                except:
+                except (ValueError, TypeError):
                     p['settles_in_hours'] = "?"
                     p['settles_in_days'] = 999
             else:
                 p['settles_in_hours'] = "?"
                 p['settles_in_days'] = 999
+
+            # 3. Calculate New Metrics & Flags
+            signal = p.get('signal', {})
+            city = signal.get('city', '')
+            p['city_flag'] = self._get_city_flag(city)
+            
+            om_val = signal.get('om_val')
+            target_int = signal.get('target_int')
+            
+            p['vale_api'] = om_val
+            
+            # Format int(pm)
+            if target_int:
+                low, high = target_int
+                if high >= 150: # TEMP_UPPER_BOUND
+                    p['int_pm'] = f">{low}"
+                elif low <= -50: # TEMP_LOWER_BOUND
+                    p['int_pm'] = f"<{high}"
+                else:
+                    p['int_pm'] = f"{low}-{high}"
+                
+                # Calculate delta(api)
+                if om_val is not None:
+                    if low <= om_val <= high:
+                        p['delta_api'] = 0.0
+                    else:
+                        p['delta_api'] = min(abs(om_val - low), abs(om_val - high))
+                else:
+                    p['delta_api'] = None
+            else:
+                 p['int_pm'] = "?"
+                 p['delta_api'] = None
 
             # 2. Apply Dynamic Filters
             # Edge filter (absolute)
@@ -232,6 +274,26 @@ class BotService:
 
         # 3. Sort Filtered Trades by Edge (Biggest on TOP)
         processed_trades.sort(key=lambda x: abs(x['edge']), reverse=True)
+        return processed_trades
+
+    def _get_city_flag(self, city):
+        """Returns the ISO country code for a given city."""
+        # Returns 2-letter ISO code for flagcdn usage
+        flags = {
+            "seattle": "us", "new york": "us", "chicago": "us", "miami": "us", 
+            "los angeles": "us", "san francisco": "us", "austin": "us", "boston": "us", "las vegas": "us", "phoenix": "us", "denver": "us",
+            "london": "gb", "tokyo": "jp", "toronto": "ca", "mumbai": "in", 
+            "sao paulo": "br", "paris": "fr", "berlin": "de", "sydney": "au", 
+            "dubai": "ae", "singapore": "sg", "seoul": "kr", "rome": "it", "madrid": "es"
+        }
+        return flags.get(city.lower(), "")
+
+    def get_context(self):
+        """Returns context for the dashboard with dynamic filtering."""
+        status = self.portfolio.get_status()
+        
+        # Use fast method for trades to avoid duplication
+        processed_trades = self.get_opportunities_fast()
 
         if self.live_mode:
             cash = float(self.poly_client.get_balance() or 0)

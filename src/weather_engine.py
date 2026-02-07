@@ -3,7 +3,13 @@ import math
 import time
 import json
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
+from typing import Optional, Dict, Any, Tuple
+
+# Cache TTL constants (in hours)
+CACHE_TTL_HOURS = 1  # Forecast cache TTL
+CACHE_HISTORICAL_TTL_HOURS = 24  # Historical data cache TTL
+
 
 class WeatherEngine:
     def __init__(self):
@@ -40,21 +46,82 @@ class WeatherEngine:
         self.cache_file = os.path.join(os.path.dirname(__file__), "weather_cache.json")
         self.forecast_cache = self._load_cache() 
 
-    def _load_cache(self):
+    def _load_cache(self) -> Dict[str, Any]:
+        """Load cache from file, filtering out expired entries."""
         if os.path.exists(self.cache_file):
             try:
                 with open(self.cache_file, "r") as f:
-                    return json.load(f)
-            except:
+                    raw_cache = json.load(f)
+                # Filter expired entries
+                return self._filter_expired_cache(raw_cache)
+            except (json.JSONDecodeError, IOError) as e:
+                print(f"Warning: Failed to load cache: {e}")
                 return {}
         return {}
+    
+    def _filter_expired_cache(self, cache: Dict[str, Any]) -> Dict[str, Any]:
+        """Remove expired entries from cache."""
+        now = datetime.utcnow()
+        filtered = {}
+        
+        for key, value in cache.items():
+            if isinstance(value, dict) and "_cached_at" in value:
+                cached_at = datetime.fromisoformat(value["_cached_at"])
+                ttl_hours = value.get("_ttl_hours", CACHE_TTL_HOURS)
+                if now - cached_at < timedelta(hours=ttl_hours):
+                    filtered[key] = value
+            else:
+                # Legacy cache entry without timestamp - keep but mark for refresh
+                filtered[key] = value
+        
+        return filtered
+    
+    def _get_cached(self, key: str) -> Optional[Dict[str, Any]]:
+        """Get cached value if not expired."""
+        if key not in self.forecast_cache:
+            return None
+        
+        value = self.forecast_cache[key]
+        
+        # Check expiration for timestamped entries
+        if isinstance(value, dict) and "_cached_at" in value:
+            cached_at = datetime.fromisoformat(value["_cached_at"])
+            ttl_hours = value.get("_ttl_hours", CACHE_TTL_HOURS)
+            if datetime.utcnow() - cached_at >= timedelta(hours=ttl_hours):
+                # Expired - remove from cache
+                del self.forecast_cache[key]
+                return None
+            # Return the actual data (without metadata)
+            return {k: v for k, v in value.items() if not k.startswith("_")}
+        
+        return value
+    
+    def _set_cached(self, key: str, value: Dict[str, Any], ttl_hours: int = CACHE_TTL_HOURS) -> None:
+        """Set cached value with expiration timestamp."""
+        cached_value = {
+            **value,
+            "_cached_at": datetime.utcnow().isoformat(),
+            "_ttl_hours": ttl_hours
+        }
+        self.forecast_cache[key] = cached_value
+        self._save_cache()
 
-    def _save_cache(self):
+    def _save_cache(self) -> None:
+        """Save cache to file."""
         try:
             with open(self.cache_file, "w") as f:
                 json.dump(self.forecast_cache, f)
-        except:
-            pass
+        except IOError as e:
+            print(f"Warning: Failed to save cache: {e}")
+    
+    def clear_expired_cache(self) -> int:
+        """Manually clear expired cache entries. Returns count of removed entries."""
+        original_count = len(self.forecast_cache)
+        self.forecast_cache = self._filter_expired_cache(self.forecast_cache)
+        removed = original_count - len(self.forecast_cache)
+        if removed > 0:
+            self._save_cache()
+        return removed
 
     def get_coordinates(self, city):
         city_slug = city.lower().replace(" ", "-")
@@ -69,7 +136,8 @@ class WeatherEngine:
                 res = (round(data["results"][0]["latitude"], 4), round(data["results"][0]["longitude"], 4))
                 self.geo_cache[city] = res
                 return res
-        except: pass
+        except (requests.RequestException, json.JSONDecodeError, KeyError, IndexError) as e:
+            print(f"Warning: Geocoding failed for {city}: {e}")
         return None, None
 
     def _c_to_f(self, celsius):
@@ -97,10 +165,14 @@ class WeatherEngine:
         except:
             return 0.05
 
-    def get_open_meteo_forecast(self, lat, lon, target_date):
+    def get_open_meteo_forecast(self, lat: float, lon: float, target_date: str) -> Optional[Dict[str, Any]]:
+        """Fetch forecast from Open-Meteo API with caching."""
         cache_key = f"om_{lat}_{lon}_{target_date}"
-        if cache_key in self.forecast_cache:
-            return self.forecast_cache[cache_key]
+        
+        # Check cache first
+        cached = self._get_cached(cache_key)
+        if cached:
+            return cached
 
         try:
             params = {"latitude": lat, "longitude": lon, "daily": ["temperature_2m_max", "precipitation_sum"], "timezone": "auto"}
@@ -110,10 +182,10 @@ class WeatherEngine:
             if target_date in times:
                 idx = times.index(target_date)
                 res = {"temp": data["temperature_2m_max"][idx], "precip": data["precipitation_sum"][idx]}
-                self.forecast_cache[cache_key] = res
-                self._save_cache()
+                self._set_cached(cache_key, res, ttl_hours=CACHE_TTL_HOURS)
                 return res
-        except: pass
+        except (requests.RequestException, json.JSONDecodeError, KeyError, IndexError) as e:
+            print(f"Warning: Open-Meteo forecast failed: {e}")
         return None
 
     def get_nws_forecast(self, lat, lon, target_date):
@@ -128,8 +200,9 @@ class WeatherEngine:
             for p in periods:
                 if target_date in p["startTime"]:
                     # NWS gives simpler text usually "75" etc.
-                    return {"temp": p.get("temperature"), "precip": 0.0 if "Clear" in p.get("shortForecast") else 0.5}
-        except: pass
+                    return {"temp": p.get("temperature"), "precip": 0.0 if "Clear" in p.get("shortForecast", "") else 0.5}
+        except (requests.RequestException, json.JSONDecodeError, KeyError, IndexError) as e:
+            print(f"Warning: NWS forecast failed: {e}")
         return None
 
     def get_visual_crossing_forecast(self, lat, lon, target_date):
@@ -145,7 +218,8 @@ class WeatherEngine:
                 if r.status_code == 200:
                     day_data = r.json().get("days", [{}])[0]
                     return {"temp": day_data.get("tempmax"), "precip": day_data.get("precip")}
-            except: pass
+            except (requests.RequestException, json.JSONDecodeError, KeyError, IndexError) as e:
+                print(f"Warning: Visual Crossing forecast failed: {e}")
         return None
 
     def get_forecast_probability_detailed(self, city, date_str, outcome_range, market_unit="F", log=None):
@@ -178,7 +252,7 @@ class WeatherEngine:
                     target_dt = datetime.strptime(target_date, "%Y-%m-%d")
                     today_dt = datetime.utcnow()
                     lead_days = max(0, (target_dt - today_dt).days)
-                except:
+                except ValueError:
                     lead_days = 0
                     
                 return self._calculate_prob_cdf(temp, low, high, lead_days=lead_days)
@@ -242,7 +316,8 @@ class WeatherEngine:
                 if nws:
                     # NWS forecast for 'today' often contains the observations/current data
                     return {"max_temp": nws["temp"], "precip": nws["precip"]}
-            except: pass
+            except (requests.RequestException, KeyError) as e:
+                print(f"Warning: NWS daily data failed: {e}")
 
         # Source 2: Open-Meteo (Global / Fallback)
         try:
@@ -253,5 +328,6 @@ class WeatherEngine:
             if target_date in times:
                 idx = times.index(target_date)
                 return {"max_temp": data["temperature_2m_max"][idx], "precip": data["precipitation_sum"][idx]}
-        except: pass
+        except (requests.RequestException, json.JSONDecodeError, KeyError, IndexError) as e:
+            print(f"Warning: Open-Meteo daily data failed: {e}")
         return None

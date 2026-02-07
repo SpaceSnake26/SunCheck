@@ -14,8 +14,8 @@ class PortfolioManager:
             try:
                 with open(self.filename, 'r') as f:
                     return json.load(f)
-            except:
-                pass
+            except (json.JSONDecodeError, IOError) as e:
+                print(f"Warning: Failed to load portfolio data: {e}")
         
         # Default fresh state
         return {
@@ -137,7 +137,7 @@ class PortfolioManager:
                     try:
                         dt = datetime.strptime(f"{current_year} {month_str} {day}", "%Y %B %d")
                         end_date = dt.strftime("%Y-%m-%d")
-                    except:
+                    except ValueError:
                         pass
             
             if not end_date:

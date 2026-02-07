@@ -114,7 +114,8 @@ class PolyClient:
                 params = BalanceAllowanceParams(asset_type=AssetType.COLLATERAL, signature_type=1)
                 resp = self.client.get_balance_allowance(params=params)
                 return float(resp.get("balance", 0)) / 1_000_000
-            except: pass
+            except Exception as e:
+                print(f"Warning: CLOB balance check failed: {e}")
             
         return 0.0
 
@@ -137,7 +138,7 @@ class PolyClient:
             if isinstance(token_ids, str):
                 import json
                 try: token_ids = json.loads(token_ids)
-                except: pass
+                except json.JSONDecodeError: pass
 
             # 2. Fallback to API check if missing or malformed
             if not token_ids or not isinstance(token_ids, list) or len(token_ids) < 2:

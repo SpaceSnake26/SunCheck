@@ -4,3 +4,8 @@ rich
 fastapi
 uvicorn
 jinja2
+pydantic
+py-clob-client
+eth-account
+pytest
+pytest-asyncio
