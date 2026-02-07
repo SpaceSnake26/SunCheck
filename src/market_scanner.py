@@ -253,10 +253,7 @@ class MarketScanner:
                     })
                     seen_ids.add(mid)
 
-        cities = [
-            "london", "miami", "buenos-aires", "atlanta", 
-            "seoul", "seattle", "toronto", "chicago", "dallas"
-        ]
+        cities = ["london", "miami", "seattle", "toronto"]
         today = datetime.now()
         # Look ahead 3 days to match user's previous successful discovery
         optimized_slugs = []
