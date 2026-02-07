@@ -3,8 +3,9 @@ import math
 from datetime import datetime
 
 class PaperTrader:
-    def __init__(self, weather_engine):
+    def __init__(self, weather_engine, poly_client=None):
         self.weather_engine = weather_engine
+        self.poly_client = poly_client
 
     def _parse_friendly_date(self, date_text):
         try:
@@ -143,18 +144,33 @@ class PaperTrader:
         # 5. Outcome & Price Check
         outcomes = market.get('outcomes', [])
         prices = market.get('outcomePrices', [])
+        market_id = market.get('id', 'Unknown')
+        
+        if log: log(f"[{city}] Checking Market {market_id} | End: {market.get('endDate')} | Outcomes: {len(outcomes)}")
+
         if not prices or not outcomes: 
             if log: log(f"[{city}] REJECTED: No PM data found.")
             return None
 
         found_idx = -1
+        
         # Case A: Binary Market (Yes/No)
-        if len(outcomes) == 2 and (outcomes[0].lower() in ["yes", "yes!"] or outcomes[1].lower() in ["no"]):
-            found_idx = 0 # Bet on YES
+        if len(outcomes) == 2:
+            # Explicitly find 'Yes' outcome
+            for i, o in enumerate(outcomes):
+                if str(o).lower() in ["yes", "yes!"]:
+                    found_idx = i
+                    break
+            if found_idx == -1: found_idx = 0 # Fallback
+            if log: log(f"  --> Binary Match: Outcomes {outcomes}, picking '{outcomes[found_idx]}' at index {found_idx}")
+            
         # Case B: Categorical Market (List of temperatures)
         else:
+            if log: log(f"[{city}] Debug: Searching Categorical outcomes for target {target_int}")
             for i, o in enumerate(outcomes):
                 name = str(o).lower()
+                price = prices[i] if i < len(prices) else "N/A"
+                if log: log(f"  [{i}] {name} | Price: {price}")
                 
                 # Try range match first: "70-71"
                 range_match = re.search(r'(\d+)-(\d+)', name)
@@ -163,6 +179,7 @@ class PaperTrader:
                     high = int(range_match.group(2))
                     if low <= target_int <= high:
                         found_idx = i
+                        if log: log(f"  --> MATCH FOUND: Bucket '{name}' at index {i}")
                         break
                 
                 # Try comparison matches: "76 or higher"
@@ -170,28 +187,51 @@ class PaperTrader:
                     comp_match = re.search(r'(\d+)', name)
                     if comp_match and target_int >= int(comp_match.group(1)):
                         found_idx = i
+                        if log: log(f"  --> MATCH FOUND: Comparison '{name}' at index {i}")
                         break
                         
                 if "below" in name or "lower" in name or "less" in name:
                     comp_match = re.search(r'(\d+)', name)
                     if comp_match and target_int <= int(comp_match.group(1)):
                         found_idx = i
+                        if log: log(f"  --> MATCH FOUND: Comparison '{name}' at index {i}")
                         break
 
                 # Fallback to simple integer exact match
                 match = re.search(r'(\d+)', name)
                 if match and int(match.group(1)) == target_int:
                     found_idx = i
+                    if log: log(f"  --> MATCH FOUND: Exact '{name}' at index {i}")
                     break
         
         if found_idx == -1:
             if log: log(f"[{city}] REJECTED: Strike {target_int} not found in any outcome bucket.")
             return None
         
+        # --- V4 Final: Use Real-time CLOB Pricing ---
+        # 1. Map to Token ID
+        token_ids = market.get('clobTokenIds', [])
+        if isinstance(token_ids, str):
+            import json
+            try: token_ids = json.loads(token_ids)
+            except: pass
+        
+        token_id = None
+        if isinstance(token_ids, list) and len(token_ids) > found_idx:
+            token_id = token_ids[found_idx]
+            
+        pm_prob = float(prices[found_idx]) # Fallback (Gamma API)
+        
+        if token_id and self.poly_client:
+            clob_data = self.poly_client.get_clob_price(token_id)
+            if clob_data and clob_data.get('price'):
+                clob_price = clob_data['price']
+                if log: log(f"  --> CLOB PRICE REFRESH: Gamma {pm_prob*100:.1f}% -> CLOB {clob_price*100:.1f}% (Best Ask)")
+                pm_prob = clob_price
+        
         # Step 3: Check PM Price ($0.18 limit)
-        pm_prob = float(prices[found_idx])
         if pm_prob >= 0.18:
-            if log: log(f"[{city}] REJECTED: PM Price {pm_prob*100:.1f}% >= 18%")
+            if log: log(f"[{city}] REJECTED: Real-time Price {pm_prob*100:.1f}% >= 18% (Market: {market_id})")
             return None
             
         if pm_prob < 0.01:

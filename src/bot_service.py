@@ -14,9 +14,9 @@ class BotService:
     def __init__(self):
         self.scanner = MarketScanner()
         self.weather = WeatherEngine()
-        self.trader = PaperTrader(self.weather)
-        self.portfolio = PortfolioManager()
         self.poly_client = PolyClient()
+        self.trader = PaperTrader(self.weather, self.poly_client)
+        self.portfolio = PortfolioManager()
         self.live_mode = True # Default to Live now as requested
         self.last_run = "Never"
         self.run_status = "Idle"

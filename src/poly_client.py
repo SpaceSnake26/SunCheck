@@ -178,8 +178,28 @@ class PolyClient:
             return False, str(e)
 
     def get_clob_price(self, token_id):
-        # ... (cached/existing)
-        pass
+        """
+        Fetches the real-time Best Ask (Buy Price) and Best Bid from the CLOB API.
+        Public endpoint, no auth required.
+        """
+        try:
+            url = f"{self.host}/book?token_id={token_id}"
+            import requests
+            resp = requests.get(url, timeout=5)
+            if resp.status_code == 200:
+                data = resp.json()
+                # Best Ask is what you pay to buy (Buy Yes)
+                best_ask = float(data.get('asks', [{}])[0].get('price', 0)) if data.get('asks') else 0
+                best_bid = float(data.get('bids', [{}])[0].get('price', 0)) if data.get('bids') else 0
+                
+                return {
+                    "price": best_ask, # The price were we buy
+                    "bid": best_bid,
+                    "mid": (best_ask + best_bid) / 2 if best_ask and best_bid else best_ask or best_bid
+                }
+        except Exception as e:
+            print(f"CLOB Price Fetch Error for {token_id}: {e}")
+        return None
 
     def get_active_positions(self):
         """
