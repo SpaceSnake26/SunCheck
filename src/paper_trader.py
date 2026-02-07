@@ -149,24 +149,49 @@ class PaperTrader:
 
         found_idx = -1
         # Case A: Binary Market (Yes/No)
-        if len(outcomes) == 2 and outcomes[0].lower() in ["yes", "yes!"] or outcomes[1].lower() in ["no"]:
+        if len(outcomes) == 2 and (outcomes[0].lower() in ["yes", "yes!"] or outcomes[1].lower() in ["no"]):
             found_idx = 0 # Bet on YES
         # Case B: Categorical Market (List of temperatures)
         else:
             for i, o in enumerate(outcomes):
-                match = re.search(r'(\d+)', str(o))
+                name = str(o).lower()
+                
+                # Try range match first: "70-71"
+                range_match = re.search(r'(\d+)-(\d+)', name)
+                if range_match:
+                    low = int(range_match.group(1))
+                    high = int(range_match.group(2))
+                    if low <= target_int <= high:
+                        found_idx = i
+                        break
+                
+                # Try comparison matches: "76 or higher"
+                if "higher" in name or "above" in name or "greater" in name:
+                    comp_match = re.search(r'(\d+)', name)
+                    if comp_match and target_int >= int(comp_match.group(1)):
+                        found_idx = i
+                        break
+                        
+                if "below" in name or "lower" in name or "less" in name:
+                    comp_match = re.search(r'(\d+)', name)
+                    if comp_match and target_int <= int(comp_match.group(1)):
+                        found_idx = i
+                        break
+
+                # Fallback to simple integer exact match
+                match = re.search(r'(\d+)', name)
                 if match and int(match.group(1)) == target_int:
                     found_idx = i
                     break
         
         if found_idx == -1:
-            if log: log(f"[{city}] REJECTED: Strike {target_int} not found in outcomes.")
+            if log: log(f"[{city}] REJECTED: Strike {target_int} not found in any outcome bucket.")
             return None
         
-        # Step 3: Check PM Probability (< 15%)
+        # Step 3: Check PM Price ($0.18 limit)
         pm_prob = float(prices[found_idx])
-        if pm_prob >= 0.15:
-            if log: log(f"[{city}] REJECTED: PM Price {pm_prob*100:.1f}% >= 15%")
+        if pm_prob >= 0.18:
+            if log: log(f"[{city}] REJECTED: PM Price {pm_prob*100:.1f}% >= 18%")
             return None
             
         if pm_prob < 0.01:
