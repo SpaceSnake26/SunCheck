@@ -7,24 +7,20 @@ from typing import Optional, Dict, Any, List
 # Import clients - ensuring we use the updated ones
 try:
     # 1. Relative import (for package execution)
-    from .nws_client import NWSClient
     from .openmeteo_client import OpenMeteoClient
     from .polymarket_client import PolymarketClient
 except (ImportError, ValueError):
     try:
         # 2. Absolute import via src (for root execution)
-        from src.nws_client import NWSClient
         from src.openmeteo_client import OpenMeteoClient
         from src.polymarket_client import PolymarketClient
     except ImportError:
         # 3. Direct import (for execution inside src)
-        from nws_client import NWSClient
         from openmeteo_client import OpenMeteoClient
         from polymarket_client import PolymarketClient
 
 class WeatherEngine:
     def __init__(self):
-        self.nws_client = NWSClient()
         self.om_client = OpenMeteoClient()
         
         # Exact City List & Rules
