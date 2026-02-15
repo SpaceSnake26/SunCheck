@@ -9,6 +9,7 @@ from datetime import datetime
 import uuid
 import os
 import requests
+from discover_ops import OpportunityFinder
 
 # System Mode Logic and Data Aggregation
 class BotService:
@@ -18,6 +19,8 @@ class BotService:
         self.poly_client = PolyClient()
         self.trader = PaperTrader(self.weather, self.poly_client)
         self.portfolio = PortfolioManager()
+        self.finder = OpportunityFinder(self.weather.om_client)
+        
         self.live_mode = True # Default to Live now as requested
         self.last_run = "Never"
         self.run_status = "Idle"
@@ -26,13 +29,14 @@ class BotService:
         self.proposals_by_id = {} # O(1) lookup
         
         # UI Filters (Defaults)
-        self.min_edge = 0.05
+        self.min_edge = 0.0
+        self.max_price = 0.25
         self.max_settle_days = 5.0
         
         # Initialize notifier with log callback
         self.notifier = Notifier(log_callback=self._add_log_entry)
         
-        self.log("Bot Service Initialized [v2.fresh].")
+        self.log("Bot Service Initialized [v3.strict].")
 
     def log(self, message):
         """Adds a log message with timestamp."""
@@ -59,91 +63,85 @@ class BotService:
 
         try:
             # 1. Settle Positions
-            self.log("Step 1/3: Checking settlements...")
+            self.log("Step 1/2: Checking settlements...")
             settled_count = self.portfolio.settle_positions(self.trader)
             if settled_count > 0:
                 self.log(f"Settled {settled_count} positions.")
             
-            # 2. Scan for Opportunities (Snipes + Regular)
-            self.log("Step 2/3: Scanning for weather opportunities...")
-            # We use get_weather_markets and then analyze so we don't miss anything 
-            # (scan_for_snipes is too restrictive for general use)
-            # V5.3: Increase limit to 250 to ensure we catch all valid markets (Toronto often buried)
+            # 2. Scan & Discover (New Logic)
+            self.log("Step 2/2: Discovering opportunities (Strict V3 Rules)...")
+            
+            # Fetch generic weather markets
             markets = self.scanner.get_weather_markets(limit=250, log_callback=self.log)
             
             if not markets:
                 self.log("No markets found.")
             else:
-                self.log(f"Found {len(markets)} markets. Analyzing with fresh pricing...")
+                self.log(f"Found {len(markets)} candidate markets.")
                 
-                new_proposals = 0
-                for market in markets:
-                    mid = market["id"]
-                    # Duplicate Check (Active Positions & Already Proposed)
-                    if any(p["market_id"] == mid and p.get("status") != "CLOSED" for p in self.portfolio.data["positions"]):
+                # Use OpportunityFinder
+                new_opps = self.finder.discover(markets, log_callback=self.log)
+                
+                generated_count = 0
+                for opp in new_opps:
+                    # Price Filter
+                    if opp['price'] > self.max_price:
+                        # self.log(f"Skipping expensive opp: {opp['price']} > {self.max_price}")
                         continue
-                    if mid in self.proposals_by_id:
+
+                    mid = opp["market_id"]
+                    
+                    # Duplicate Check
+                    if any(p['market']['id'] == mid for p in self.proposed_trades):
                         continue
+                        
+                    # Prepare Proposal Object matches UI expectations
+                    # The UI expects: id, market, signal (dict), outcome, price, edge, ev...
+                    # We map our clean 'opp' to this messy structure for now
                     
-                    # --- FRESH PRICE UPDATE REMOVED ---
-                    # Data API was returning inconsistent 1.00 prices. 
-                    # check_trade_outcome or Gamma API prices are sufficient.
-                    # --------------------------
-                    # --------------------------
+                    # Mock signal object for compatibility
+                    signal = {
+                        "city": opp['city'],
+                        "true_prob": 0.99, # implied by candidate status
+                        "market_prob": opp['price'],
+                        "edge": 0.99 - opp['price'],
+                        "target_int": (opp['target_bucket'], opp['target_bucket']),
+                        "om_val": opp['forecast_max'],
+                        "question": opp['market']['question']
+                    }
+                    
+                    proposal = {
+                        "id": opp['id'],
+                        "market": opp['market'],
+                        "signal": signal,
+                        "outcome": opp['outcome'],
+                        "price": opp['price'],
+                        "edge": 0.99 - opp['price'],
+                        "ev": 0.0,
+                        "delta_api": 0.0, # Not used in new logic
+                        "is_snipe": True,
+                        "timestamp": datetime.now().isoformat(),
+                        
+                        # New fields for UI display
+                        "vale_api": opp['forecast_max'],
+                        "int_pm": f"≥ {opp['target_bucket']}",
+                        "settles_in_hours": "24h", # placeholder
+                        "settles_in_days": 1
+                    }
+                    
+                    self.proposed_trades.append(proposal)
+                    generated_count += 1
+                    
+                    self.notifier.opportunity(
+                        f"Op found! {opp['city']} {opp['date']} | T={opp['forecast_max']} -> Play {opp['outcome']}"
+                    )
 
-                    # Rule 5 Rejection Logging: We pass a specialized logger to capture rejections
-                    # (This requires updating PaperTrader or just relying on its internal logging if verbose)
-                    # For now, we rely on the main log, but we ensure we catch ANY signal.
-                    
-                    # Rule 5 Rejection Logging: Pass log callback
-                    # The goal is to see WHY a market is rejected if it's close.
-                    signal = self.trader.analyze_market(market, self.scanner, log=self.log)
-                    
-                    if signal:
-                        # NEW CRITERIA: 15%/15% logic already passed in analyze_market
-                        market_price_yes = float(signal['market_prob'])
-                        
-                        # Calculate EV and Edge
-                        ev = signal.get('ev', 0)
-                        edge = signal.get('edge', 0)
-                        
-                        # Calculate Delta(API) for the UI
-                        source_probs = signal.get("source_probs", {})
-                        om_p = source_probs.get("OpenMeteo")
-                        nws_p = source_probs.get("NWS")
-                        vc_p = source_probs.get("VisualCrossing")
-                        
-                        delta_api = None
-                        if om_p is not None:
-                            if nws_p is not None:
-                                delta_api = abs(om_p - nws_p) 
-                            elif vc_p is not None:
-                                delta_api = abs(om_p - vc_p)
-                        
-                        proposal = {
-                            "id": str(uuid.uuid4()),
-                            "market": market,
-                            "signal": signal,
-                            "outcome": signal.get('outcome', 'YES'),
-                            "price": market_price_yes,
-                            "edge": edge,
-                            "ev": ev,
-                            "delta_api": delta_api,
-                            "is_snipe": True,
-                            "timestamp": datetime.now().isoformat()
-                        }
-                        self.proposed_trades.append(proposal)
-                        new_proposals += 1
-                        # Use notifier for opportunity alerts
-                        self.notifier.opportunity(
-                            f"Found arbitrage in {signal['city']} at {signal['target_int']}! "
-                            f"Price: {market_price_yes*100:.1f}% | Edge: {edge*100:.1f}%"
-                        )
-
-                self.log(f"Cycle complete. Scanned: {len(markets)}, New: {new_proposals}")
+                self.log(f"Cycle complete. New Opportunities: {generated_count}")
 
         except Exception as e:
             self.log(f"ERR: Error in cycle: {e}")
+            import traceback
+            traceback.print_exc()
         finally:
             self.run_status = "Idle"
 

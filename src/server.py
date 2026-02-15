@@ -122,13 +122,39 @@ async def lifespan(app: FastAPI):
     bot.log("Background scheduler started.")
     yield
     # Shutdown: Cancel scheduler task
-    if _scheduler_task:
-        _scheduler_task.cancel()
-        try:
-            await _scheduler_task
-        except asyncio.CancelledError:
-            pass
-    bot.log("Background scheduler stopped.")
+    # Shutdown: Cancel scheduler task
+    yield
+    # Shutdown: IMMEDIATE EXIT
+    # We skip all cleanup to prevent hangs. The OS will clean up resources.
+    print("Shutdown signal received. Force killing process now.")
+    os._exit(0)
+
+# Aggressive Exit Handler to prevent hangs
+import signal
+import sys
+import threading
+import time
+
+def shutdown_watchdog():
+    """Background thread to force kill process if it hangs."""
+    print("Shutdown watchdog started. Force exit in 1.0s...")
+    time.sleep(1.0)
+    print("Watchdog: Force exiting now.")
+    os._exit(0)
+
+def force_exit(signum, frame):
+    print(f"\nSignal {signum} received. Scheduling force exit...")
+    # Start watchdog thread to ensure we die even if main loop is stuck
+    t = threading.Thread(target=shutdown_watchdog, daemon=True)
+    t.start()
+    
+    # Also try to kill immediately if possible, but yield to let Uvicorn print its log
+    # raising SystemExit might trigger Uvicorn's cleanup, which we want to bypass if it hangs
+    # So we just let the watchdog do it, or fall through to lifespan
+
+# Register signal handlers
+signal.signal(signal.SIGINT, force_exit)
+signal.signal(signal.SIGTERM, force_exit)
 
 app = FastAPI(title="SunCheck Bot Dashboard", lifespan=lifespan)
 

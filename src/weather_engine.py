@@ -1,333 +1,298 @@
-import requests
 import math
 import time
 import json
 import os
 from datetime import datetime, timedelta
-from typing import Optional, Dict, Any, Tuple
-
-# Cache TTL constants (in hours)
-CACHE_TTL_HOURS = 1  # Forecast cache TTL
-CACHE_HISTORICAL_TTL_HOURS = 24  # Historical data cache TTL
-
+from typing import Optional, Dict, Any, List
+# Import clients - ensuring we use the updated ones
+try:
+    # 1. Relative import (for package execution)
+    from .nws_client import NWSClient
+    from .openmeteo_client import OpenMeteoClient
+    from .polymarket_client import PolymarketClient
+except (ImportError, ValueError):
+    try:
+        # 2. Absolute import via src (for root execution)
+        from src.nws_client import NWSClient
+        from src.openmeteo_client import OpenMeteoClient
+        from src.polymarket_client import PolymarketClient
+    except ImportError:
+        # 3. Direct import (for execution inside src)
+        from nws_client import NWSClient
+        from openmeteo_client import OpenMeteoClient
+        from polymarket_client import PolymarketClient
 
 class WeatherEngine:
     def __init__(self):
-        self.open_meteo_url = "https://api.open-meteo.com/v1/forecast"
-        self.visual_crossing_url = "https://weather.visualcrossing.com/VisualCrossingWebServices/rest/services/timeline"
-        self.session = requests.Session()
+        self.nws_client = NWSClient()
+        self.om_client = OpenMeteoClient()
         
-        # KEY CHANGE: Map cities to exact NWS Station Coordinates (Polymarket standard)
-        self.station_map = {
-            "chicago": {"lat": 41.9742, "lon": -87.9073, "code": "KORD"}, # O'Hare
-            "atlanta": {"lat": 33.6407, "lon": -84.4277, "code": "KATL"}, # Hartsfield-Jackson
-            "new-york": {"lat": 40.7831, "lon": -73.9712, "code": "KNYC"}, # Central Park
-            "miami": {"lat": 25.7932, "lon": -80.2906, "code": "KMIA"},   # Miami Int
-            "seattle": {"lat": 47.4502, "lon": -122.3088, "code": "KSEA"}, # SeaTac
-            "london": {"lat": 51.4700, "lon": -0.4543, "code": "EGLL"},   # Heathrow
-            "paris": {"lat": 49.0097, "lon": 2.5479, "code": "LFPG"},     # CDG
-            "los-angeles": {"lat": 33.9416, "lon": -118.4085, "code": "KLAX"},
-            "san-francisco": {"lat": 37.6213, "lon": -122.3790, "code": "KSFO"},
-            "austin": {"lat": 30.1975, "lon": -97.6664, "code": "KAUS"},
-            "boston": {"lat": 42.3601, "lon": -71.0589, "code": "KBOS"},
-            "dallas": {"lat": 32.8998, "lon": -97.0403, "code": "KDFW"},
-            "denver": {"lat": 39.8561, "lon": -104.6737, "code": "KDEN"},
-            "houston": {"lat": 29.9902, "lon": -95.3368, "code": "KIAH"},
-            "las-vegas": {"lat": 36.0840, "lon": -115.1537, "code": "KLAS"},
-            "phoenix": {"lat": 33.4342, "lon": -112.0116, "code": "KPHX"},
-            "tokyo": {"lat": 35.5523, "lon": 139.7797, "code": "RJTT"}, # Haneda
-            "berlin": {"lat": 52.3667, "lon": 13.5033, "code": "EDDB"}, # BER
-            "rome": {"lat": 41.8003, "lon": 12.2389, "code": "LIRF"}, # FCO
-            "madrid": {"lat": 40.4839, "lon": 3.5680, "code": "LEMD"}, # MAD
-            "toronto": {"lat": 43.6777, "lon": -79.6248, "code": "CYYZ"}, # Pearson
+        # Exact City List & Rules
+        self.cities_config = {
+            "London": {"api": "OM", "unit": "C", "country": "UK"},
+            "Toronto": {"api": "OM", "unit": "C", "country": "CA"},
+            "Ankara": {"api": "OM", "unit": "C", "country": "TR"},
+            "Seattle": {"api": "OM", "unit": "F", "country": "US"},
+            "Miami": {"api": "OM", "unit": "F", "country": "US"},
+            "Atlanta": {"api": "OM", "unit": "F", "country": "US"},
+            "Chicago": {"api": "OM", "unit": "F", "country": "US"},
+            "Dallas": {"api": "OM", "unit": "F", "country": "US"},
+            "New York": {"api": "OM", "unit": "F", "country": "US"}
         }
         
-        self.geo_cache = {}
-        self.cache_file = os.path.join(os.path.dirname(__file__), "weather_cache.json")
-        self.forecast_cache = self._load_cache() 
+        # Cache for forecasts: { "City_Date": {max_temp, unit} }
+        self.forecast_cache = {}
 
-    def _load_cache(self) -> Dict[str, Any]:
-        """Load cache from file, filtering out expired entries."""
-        if os.path.exists(self.cache_file):
-            try:
-                with open(self.cache_file, "r") as f:
-                    raw_cache = json.load(f)
-                # Filter expired entries
-                return self._filter_expired_cache(raw_cache)
-            except (json.JSONDecodeError, IOError) as e:
-                print(f"Warning: Failed to load cache: {e}")
-                return {}
-        return {}
-    
-    def _filter_expired_cache(self, cache: Dict[str, Any]) -> Dict[str, Any]:
-        """Remove expired entries from cache."""
-        now = datetime.utcnow()
-        filtered = {}
-        
-        for key, value in cache.items():
-            if isinstance(value, dict) and "_cached_at" in value:
-                cached_at = datetime.fromisoformat(value["_cached_at"])
-                ttl_hours = value.get("_ttl_hours", CACHE_TTL_HOURS)
-                if now - cached_at < timedelta(hours=ttl_hours):
-                    filtered[key] = value
-            else:
-                # Legacy cache entry without timestamp - keep but mark for refresh
-                filtered[key] = value
-        
-        return filtered
-    
-    def _get_cached(self, key: str) -> Optional[Dict[str, Any]]:
-        """Get cached value if not expired."""
-        if key not in self.forecast_cache:
-            return None
-        
-        value = self.forecast_cache[key]
-        
-        # Check expiration for timestamped entries
-        if isinstance(value, dict) and "_cached_at" in value:
-            cached_at = datetime.fromisoformat(value["_cached_at"])
-            ttl_hours = value.get("_ttl_hours", CACHE_TTL_HOURS)
-            if datetime.utcnow() - cached_at >= timedelta(hours=ttl_hours):
-                # Expired - remove from cache
-                del self.forecast_cache[key]
-                return None
-            # Return the actual data (without metadata)
-            return {k: v for k, v in value.items() if not k.startswith("_")}
-        
-        return value
-    
-    def _set_cached(self, key: str, value: Dict[str, Any], ttl_hours: int = CACHE_TTL_HOURS) -> None:
-        """Set cached value with expiration timestamp."""
-        cached_value = {
-            **value,
-            "_cached_at": datetime.utcnow().isoformat(),
-            "_ttl_hours": ttl_hours
-        }
-        self.forecast_cache[key] = cached_value
-        self._save_cache()
-
-    def _save_cache(self) -> None:
-        """Save cache to file."""
-        try:
-            with open(self.cache_file, "w") as f:
-                json.dump(self.forecast_cache, f)
-        except IOError as e:
-            print(f"Warning: Failed to save cache: {e}")
-    
-    def clear_expired_cache(self) -> int:
-        """Manually clear expired cache entries. Returns count of removed entries."""
-        original_count = len(self.forecast_cache)
-        self.forecast_cache = self._filter_expired_cache(self.forecast_cache)
-        removed = original_count - len(self.forecast_cache)
-        if removed > 0:
-            self._save_cache()
-        return removed
-
-    def get_coordinates(self, city):
-        city_slug = city.lower().replace(" ", "-")
-        if city_slug in self.station_map:
-            return self.station_map[city_slug]["lat"], self.station_map[city_slug]["lon"]
-        
-        if city in self.geo_cache: return self.geo_cache[city]
-        try:
-            r = self.session.get("https://geocoding-api.open-meteo.com/v1/search", params={"name": city, "count": 1}, timeout=10)
-            data = r.json()
-            if "results" in data:
-                res = (round(data["results"][0]["latitude"], 4), round(data["results"][0]["longitude"], 4))
-                self.geo_cache[city] = res
-                return res
-        except (requests.RequestException, json.JSONDecodeError, KeyError, IndexError) as e:
-            print(f"Warning: Geocoding failed for {city}: {e}")
-        return None, None
-
-    def _c_to_f(self, celsius):
-        return (celsius * 9/5) + 32
-
-    def _f_to_c(self, fahrenheit):
-        return (fahrenheit - 32) * 5/9
-
-    def _calculate_prob_cdf(self, forecast_val, threshold_low, threshold_high, sigma=None, lead_days=0):
+    def fetch_forecast(self, city: str, date_str: str) -> Optional[Dict[str, Any]]:
         """
-        Uses CDF to find probability that value falls between low and high.
-        Dynamic Sigma scales with lead time.
+        Fetch forecast respecting the strict API rules.
         """
-        if sigma is None:
-            # V5.2: Optimistic Sigma (base 0.8 + 0.3 per day)
-            # This allows for higher peak probabilities on near-term forecasts.
-            sigma = 0.8 + (0.3 * lead_days)
-            
-        def phi(x): return 0.5 * (1 + math.erf(x / math.sqrt(2)))
+        # Normalize city key (Title Case for Config)
+        # Config keys are "London", "Seattle", etc.
+        # Handle "new york" -> "New York" if needed, but config keys are single words mostly.
+        # Actually our keys are "London", "Toronto", "Ankara", "Seattle", "Miami", "Atlanta".
+        city_key = city.title() 
         
-        try:
-            p_high = phi((threshold_high - forecast_val) / sigma)
-            p_low = phi((threshold_low - forecast_val) / sigma)
-            return max(0, min(1, p_high - p_low))
-        except:
-            return 0.05
-
-    def get_open_meteo_forecast(self, lat: float, lon: float, target_date: str) -> Optional[Dict[str, Any]]:
-        """Fetch forecast from Open-Meteo API with caching."""
-        cache_key = f"om_{lat}_{lon}_{target_date}"
-        
-        # Check cache first
-        cached = self._get_cached(cache_key)
-        if cached:
-            return cached
-
-        try:
-            params = {"latitude": lat, "longitude": lon, "daily": ["temperature_2m_max", "precipitation_sum"], "timezone": "auto"}
-            r = self.session.get(self.open_meteo_url, params=params, timeout=10)
-            data = r.json().get("daily", {})
-            times = data.get("time", [])
-            if target_date in times:
-                idx = times.index(target_date)
-                res = {"temp": data["temperature_2m_max"][idx], "precip": data["precipitation_sum"][idx]}
-                self._set_cached(cache_key, res, ttl_hours=CACHE_TTL_HOURS)
-                return res
-        except (requests.RequestException, json.JSONDecodeError, KeyError, IndexError) as e:
-            print(f"Warning: Open-Meteo forecast failed: {e}")
-        return None
-
-    def get_nws_forecast(self, lat, lon, target_date):
-        """Using NWS Grid endpoints for US precision."""
-        try:
-            # 1. Get Point
-            r = self.session.get(f"https://api.weather.gov/points/{lat},{lon}", timeout=10)
-            forecast_url = r.json()["properties"]["forecast"]
-            # 2. Get Forecast
-            f_resp = self.session.get(forecast_url, timeout=10)
-            periods = f_resp.json()["properties"]["periods"]
-            for p in periods:
-                if target_date in p["startTime"]:
-                    # NWS gives simpler text usually "75" etc.
-                    return {"temp": p.get("temperature"), "precip": 0.0 if "Clear" in p.get("shortForecast", "") else 0.5}
-        except (requests.RequestException, json.JSONDecodeError, KeyError, IndexError) as e:
-            print(f"Warning: NWS forecast failed: {e}")
-        return None
-
-    def get_visual_crossing_forecast(self, lat, lon, target_date):
-        """Source 2: Visual Crossing (Global)"""
-        import os
-        # Try primary key from environment
-        keys = [os.getenv("VISUAL_CROSSING_KEY")]
-        for api_key in keys:
-            if not api_key: continue
-            try:
-                url = f"{self.visual_crossing_url}/{lat},{lon}/{target_date}/{target_date}?key={api_key}&unitGroup=metric&include=days"
-                r = self.session.get(url, timeout=10)
-                if r.status_code == 200:
-                    day_data = r.json().get("days", [{}])[0]
-                    return {"temp": day_data.get("tempmax"), "precip": day_data.get("precip")}
-            except (requests.RequestException, json.JSONDecodeError, KeyError, IndexError) as e:
-                print(f"Warning: Visual Crossing forecast failed: {e}")
-        return None
-
-    def get_forecast_probability_detailed(self, city, date_str, outcome_range, market_unit="F", log=None):
-        """
-        Returns a dict with consensus prob AND individual source probs.
-        """
-        target_date = date_str.split("T")[0]
-        lat, lon = self.get_coordinates(city)
-        if not lat: return {"consensus": 0.0, "sources": {}}
-
-        source_probs = {}
-        
-        # Helper to get prob for a source
-        def calc_source_prob(forecast_data, name):
-            if forecast_data and forecast_data["temp"] is not None:
-                temp = forecast_data["temp"]
-                # Unit conversion if needed
-                if name == "OpenMeteo":
-                    temp = temp if market_unit == "C" else self._c_to_f(temp)
-                elif name == "VisualCrossing":
-                    temp = temp if market_unit == "C" else self._c_to_f(temp)
-                elif name == "NWS":
-                    temp = temp if market_unit == "F" else self._f_to_c(temp)
-                
-                low = float(outcome_range[0])
-                high = float(outcome_range[1])
-                
-                # Calculate Lead Days
-                try:
-                    target_dt = datetime.strptime(target_date, "%Y-%m-%d")
-                    today_dt = datetime.utcnow()
-                    lead_days = max(0, (target_dt - today_dt).days)
-                except ValueError:
-                    lead_days = 0
-                    
-                return self._calculate_prob_cdf(temp, low, high, lead_days=lead_days)
+        config = self.cities_config.get(city_key)
+        if not config:
+            # Try manual map for specific cases if needed
+            print(f"[Error] Config not found for {city} (key: {city_key})")
             return None
 
-        # 1. Open-Meteo
-        om_data = self.get_open_meteo_forecast(lat, lon, target_date)
-        om_prob = calc_source_prob(om_data, "OpenMeteo")
-        if om_prob is not None: source_probs["OpenMeteo"] = om_prob
+        # Check Cache
+        cache_key = f"{city}_{date_str}"
+        if cache_key in self.forecast_cache:
+            return self.forecast_cache[cache_key]
 
-        # 2. Visual Crossing
-        vc_data = self.get_visual_crossing_forecast(lat, lon, target_date)
-        vc_prob = calc_source_prob(vc_data, "VisualCrossing")
-        if vc_prob is not None: source_probs["VisualCrossing"] = vc_prob
-
-        # 3. NWS
-        is_us = 24 < lat < 50 and -125 < lon < -66
-        nws_prob = None
-        if is_us:
-            nws_data = self.get_nws_forecast(lat, lon, target_date)
-            nws_prob = calc_source_prob(nws_data, "NWS")
-            if nws_prob is not None: source_probs["NWS"] = nws_prob
-
-        if not source_probs:
-            return {"consensus": 0.0, "sources": {}}
-
-        # Consensus is average of available probs
-        consensus = sum(source_probs.values()) / len(source_probs)
+        print(f"[Fetch] Getting forecast for {city} on {date_str} using {config['api']}...")
         
-        # KEY CHANGE: Expose RAW values for Proximity Strategy
-        raw_values = {}
-        if om_prob is not None and "temp" in om_data:
-            # Re-apply unit conversion to get the display value
-            val = om_data["temp"]
-            if market_unit == "F": val = self._c_to_f(val) 
-            raw_values["OpenMeteo"] = val
+        result = None
+        if config['api'] == "NWS":
+            # NWS requires lat/lon
+            result = self.nws_client.get_forecast(config['lat'], config['lon'], date_str)
+        elif config['api'] == "OM":
+            result = self.om_client.get_forecast(city, date_str)
             
-        return {
-            "consensus": consensus,
-            "sources": source_probs,
-            "raw_values": raw_values
-        }
+        if result:
+            # Validate Unit
+            if result['unit'] != config['unit']:
+                # This should ideally not happen if APIs are standard, but good to warn
+                # Open-Meteo returns 'C' by default. NWS returns 'F' usually.
+                # If NWS returns 'C' (unlikely for US points), we might need to handle it or error out.
+                # For strictness: verify unit.
+                if config['unit'] == 'F' and result['unit'] == 'wmoUnit:degC': # NWS sometimes uses weird unit codes
+                     print(f"[Warning] Unit mismatch for {city}. Expected {config['unit']}, got {result['unit']}")
+                pass 
 
-    def get_forecast_probability(self, city, date_str, outcome_range, market_unit="F", log=None):
-        """Legacy wrapper for simple prob call."""
-        res = self.get_forecast_probability_detailed(city, date_str, outcome_range, market_unit, log)
+            self.forecast_cache[cache_key] = result
+            return result
+        
+        print(f"[Fail] No forecast data for {city}")
+        return None
+
+    def compute_bucket(self, temp: float) -> Optional[Dict[str, Any]]:
+        """
+        Strict Bucket Proximity Rule:
+        U = ceil(T)
+        delta = U - T
+        Candidate if 0 < delta <= 0.3
+        """
+        try:
+            u_bucket = math.ceil(temp)
+            delta = u_bucket - temp
+            
+            # Round delta to avoid floating point weirdness like 0.30000000004
+            delta = round(delta, 4)
+
+            if delta == 0:
+                return {"target_bucket": u_bucket, "delta": 0, "is_candidate": False, "reason": "Exact Integer"}
+            
+            if 0 < delta <= 0.3:
+                return {"target_bucket": u_bucket, "delta": delta, "is_candidate": True}
+            
+            return {"target_bucket": u_bucket, "delta": delta, "is_candidate": False, "reason": "Delta > 0.3"}
+            
+        except Exception as e:
+            print(f"[Error] Computing bucket for {temp}: {e}")
+            return None
+
+    def get_forecast_probability(self, city, date, outcome_range, unit="F", log=None):
+        """
+        Compatibility method for MarketScanner.
+        Returns 0.99 if forecast is within range, 0.01 otherwise.
+        """
+        res = self.get_forecast_probability_detailed(city, date, outcome_range, unit, log)
         return res["consensus"]
 
-    def get_daily_data(self, city, date_str):
-        """Fetches actual daily data for settlement (Oracle)."""
-        lat, lon = self.get_coordinates(city)
-        if not lat: return None
+    def get_forecast_probability_detailed(self, city, date, outcome_range, unit="F", log=None):
+        """
+        Compatibility method for PaperTrader.
+        Returns detailed probability structure using the new strict forecast logic.
+        """
+        # Convert date "2026-02-12T00:00:00" -> "2026-02-12"
+        if "T" in date:
+            date = date.split("T")[0]
+            
+        forecast = self.fetch_forecast(city, date)
         
-        target_date = date_str.split("T")[0]
-        is_us = 24 < lat < 50 and -125 < lon < -66
+        # Default/Fallback Structure
+        result = {
+            "consensus": 0.5,
+            "sources": {},
+            "raw_values": {}
+        }
+        
+        if not forecast:
+            return result
+            
+        temp = forecast['max_temp']
+        f_unit = forecast['unit']
+        
+        # Source Name based on Config (NWS or OpenMeteo)
+        config = self.cities_config.get(city)
+        source_name = "NWS" if config and config['api'] == "NWS" else "OpenMeteo"
+        
+        # record raw value
+        result["raw_values"][source_name] = temp
+        
+        # Check Unit Mismatch
+        if unit != f_unit:
+            # If units don't match, we return 0 probability to be safe (or 0.5?)
+            # PaperTrader expects consensus.
+            result["consensus"] = 0.0
+            return result
 
-        # Source 1: NWS Observations (Best for US Airport Stations)
-        if is_us:
-            try:
-                nws = self.get_nws_forecast(lat, lon, target_date)
-                if nws:
-                    # NWS forecast for 'today' often contains the observations/current data
-                    return {"max_temp": nws["temp"], "precip": nws["precip"]}
-            except (requests.RequestException, KeyError) as e:
-                print(f"Warning: NWS daily data failed: {e}")
-
-        # Source 2: Open-Meteo (Global / Fallback)
         try:
-            params = {"latitude": lat, "longitude": lon, "daily": ["temperature_2m_max", "precipitation_sum"], "past_days": 14}
-            r = self.session.get(self.open_meteo_url, params=params, timeout=10)
-            data = r.json().get("daily", {})
-            times = data.get("time", [])
-            if target_date in times:
-                idx = times.index(target_date)
-                return {"max_temp": data["temperature_2m_max"][idx], "precip": data["precipitation_sum"][idx]}
-        except (requests.RequestException, json.JSONDecodeError, KeyError, IndexError) as e:
-            print(f"Warning: Open-Meteo daily data failed: {e}")
-        return None
+            min_val = float(outcome_range[0])
+            max_val = float(outcome_range[1])
+            
+            # Simple Binary Probability based on Forecast
+            if min_val <= temp <= max_val:
+                prob = 0.99
+            else:
+                prob = 0.01
+                
+            result["consensus"] = prob
+            result["sources"][source_name] = prob
+            
+        except Exception as e:
+            print(f"[Error] Calculating detailed probability: {e}")
+            result["consensus"] = 0.5
+            
+        return result
+
+    def find_polymarket_match(self, city: str, date_str: str, target_bucket: int, unit: str, markets: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        """
+        Search provided markets for specific bucket match.
+        """
+        try:
+            # Filter markets for this city and date
+            # MarketScanner has already parsed some info, but let's look at raw questions/slugs
+            
+            # Date Matching
+            # date_str is YYYY-MM-DD
+            # PM markets have 'endDate'.
+            # Or we match title "... on February 10"
+            dt = datetime.strptime(date_str, "%Y-%m-%d")
+            month_day = dt.strftime("%B") + " " + str(dt.day) # "February 10" (no leading zero typically in PM titles?)
+            # Sometimes "February 04" or "February 4"? PM usually "February 4".
+            
+            # Let's check matching logic
+            potential_markets = []
+            for m in markets:
+                # Check City (case insensitive)
+                if city.lower() not in m['question'].lower() and city.lower() not in m['slug'].lower():
+                    continue
+                
+                # Check Date
+                # endDate is often ISO. Title has readable date.
+                if month_day.lower() not in m['question'].lower():
+                    # Try alternate date format?
+                    pass
+                
+                potential_markets.append(m)
+
+            for m in potential_markets:
+                # Check Outcomes
+                outcomes = json.loads(m['outcomes']) if isinstance(m['outcomes'], str) else m['outcomes']
+                
+                for out in outcomes:
+                    label = out.lower()
+                    u_str = str(target_bucket)
+                    
+                    # Patterns to match ">= U" or "Over U"
+                    # "36 or higher"
+                    # "Over 35.5" (if U=36) - Wait, prompt says "Over U" explicitly?
+                    # "Over U" -> "Over 36"
+                    
+                    match_found = False
+                    if f">= {u_str}" in label: match_found = True
+                    if f"{u_str} or higher" in label: match_found = True
+                    if f"over {u_str}" in label: match_found = True
+                    
+                    if match_found:
+                        return {"market_id": m['id'], "outcome": out, "question": m['question'], "market_slug": m['slug']}
+                        
+            return None
+            
+        except Exception as e:
+            print(f"[Error] PM Search: {e}")
+            return None
+            
+    def discover_opportunities(self, markets: List[Dict[str, Any]] = []) -> List[Dict[str, Any]]:
+        """
+        Main loop to discover opportunities using strict logic and provided markets.
+        """
+        opportunities = []
+        today = datetime.now()
+        dates = [today, today + timedelta(days=1), today + timedelta(days=2)]
+        
+        print("\n--- Starting Opportunity Discovery ---")
+        
+        for city in self.cities_config:
+            print(f"\nAnalyzing {city}...")
+            for d in dates:
+                date_str = d.strftime("%Y-%m-%d")
+                
+                # 1. Fetch Forecast
+                forecast = self.fetch_forecast(city, date_str)
+                if not forecast:
+                    continue
+                
+                temp = forecast['max_temp']
+                unit = forecast['unit']
+                
+                # 2. Compute Bucket
+                bucket_info = self.compute_bucket(temp)
+                if not bucket_info:
+                    continue
+                
+                print(f"  [{date_str}] Temp: {temp}°{unit} -> Target: {bucket_info['target_bucket']} (Delta: {bucket_info['delta']})")
+                
+                if bucket_info['is_candidate']:
+                    # 3. Check Polymarket
+                    print(f"    -> CANDIDATE! Checking matches in {len(markets)} markets...")
+                    
+                    match = self.find_polymarket_match(city, date_str, bucket_info['target_bucket'], unit, markets)
+                    
+                    if match:
+                        print(f"    [MATCH FOUND] {match['question']}")
+                        opportunities.append({
+                            "city": city,
+                            "date": date_str,
+                            "forecast_max": temp,
+                            "unit": unit,
+                            "target_bucket": bucket_info['target_bucket'],
+                            "delta": bucket_info['delta'],
+                            "polymarket_market_id": match['market_id'],
+                            "matched_outcome_label": match['outcome'],
+                            "question": match['question'],
+                            "market_slug": match['market_slug']
+                        })
+                    else:
+                         print(f"    -> No matching Polymarket outcome found for '>= {bucket_info['target_bucket']}'")
+                else:
+                    print(f"    -> Ignored: {bucket_info.get('reason')}")
+                    
+        return opportunities
+

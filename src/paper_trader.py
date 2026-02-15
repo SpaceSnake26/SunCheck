@@ -52,7 +52,7 @@ class PaperTrader:
         exact_match = re.search(exact_pattern, question, re.IGNORECASE)
 
         if higher_match:
-            city, val, condition = higher_match.group(1).strip(), int(higher_match.group(2)), "max_temp"
+            city, val, condition = higher_match.group(1).strip(), int(higher_match.group(2)), "max_temp_above"
         elif lower_match:
             city, val, condition = lower_match.group(1).strip(), int(lower_match.group(2)), "max_temp_below"
         elif range_match:
@@ -136,6 +136,8 @@ class PaperTrader:
             _, q_cond, q_thresh, _ = self.parse_question(question, end_date)
             if q_cond == "max_temp" and q_thresh:
                 return q_thresh - 0.5, q_thresh + 0.5
+            elif q_cond == "max_temp_above" and q_thresh:
+                return q_thresh, TEMP_UPPER_BOUND
             elif q_cond == "max_temp_below" and q_thresh:
                 return TEMP_LOWER_BOUND, q_thresh
             elif q_cond == "temp_range":

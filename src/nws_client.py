@@ -53,9 +53,7 @@ class NWSClient:
                     temp = p.get("temperature")
                     unit = p.get("temperatureUnit")
                     
-                    # Store in Celsius to match internal logic? 
-                    # User-provided strike is often in Celsius (based on torus/etc polymarket examples)
-                    # or at least we need consistency.
+                    # Return raw value and unit
                     res = {"max_temp": temp, "unit": unit}
                     
                     with open(cache_path, 'w') as f:
