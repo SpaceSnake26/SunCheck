@@ -33,19 +33,30 @@ class OpportunityFinder:
     def compute_bucket(self, temp: float) -> Dict[str, Any]:
         """
         Core Rule:
-        U = ceil(T)
-        delta = U - T
+        Target the nearest integer.
+        If distance (delta) is <= 0.3 (and > 0), it is a candidate.
+        This supports both rounding up (e.g. 62.8 -> 63) and rounding down (e.g. 61.2 -> 61).
         """
-        # Python's math.ceil returns integer
-        u = math.ceil(temp)
-        delta = round(u - temp, 4)
+        floor_val = math.floor(temp)
+        delta_floor = round(temp - floor_val, 4)
+        
+        ceil_val = math.ceil(temp)
+        delta_ceil = round(ceil_val - temp, 4)
+        
+        # Pick the closer one
+        if delta_floor <= delta_ceil:
+            best_target = floor_val
+            best_delta = delta_floor
+        else:
+            best_target = ceil_val
+            best_delta = delta_ceil
 
         # "If 0 < delta <= 0.3 -> candidate"
-        is_candidate = (0 < delta <= 0.3)
+        is_candidate = (0 < best_delta <= 0.3)
         
         return {
-            "target_bucket": u,
-            "delta": delta,
+            "target_bucket": best_target,
+            "delta": best_delta,
             "is_candidate": is_candidate
         }
 

@@ -77,3 +77,11 @@
     {% endfor %}
     {% endif %}
 </div>
+
+<!-- HTMX OOB Swap to update the header counter -->
+<span id="opp-counter" hx-swap-oob="true">
+    {% if proposed_trades|length > 0 %}
+    <span class="bg-violet-500/20 text-violet-400 text-[10px] px-2 py-0.5 rounded-full">{{ proposed_trades|length
+        }}</span>
+    {% endif %}
+</span>

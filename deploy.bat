@@ -1,7 +1,7 @@
 @echo off
 setlocal
 
-set PROJECT_ID=suncheck-dashboard
+set PROJECT_ID=r00m-486700
 set IMAGE_NAME=suncheck-bot
 set SERVICE_NAME=suncheck-service
 set REGION=us-central1

@@ -89,24 +89,30 @@ class WeatherEngine:
     def compute_bucket(self, temp: float) -> Optional[Dict[str, Any]]:
         """
         Strict Bucket Proximity Rule:
-        U = ceil(T)
-        delta = U - T
+        Target nearest integer (floor or ceil).
         Candidate if 0 < delta <= 0.3
         """
         try:
-            u_bucket = math.ceil(temp)
-            delta = u_bucket - temp
+            floor_val = math.floor(temp)
+            delta_floor = round(temp - floor_val, 4)
             
-            # Round delta to avoid floating point weirdness like 0.30000000004
-            delta = round(delta, 4)
-
-            if delta == 0:
-                return {"target_bucket": u_bucket, "delta": 0, "is_candidate": False, "reason": "Exact Integer"}
+            ceil_val = math.ceil(temp)
+            delta_ceil = round(ceil_val - temp, 4)
             
-            if 0 < delta <= 0.3:
-                return {"target_bucket": u_bucket, "delta": delta, "is_candidate": True}
+            if delta_floor <= delta_ceil:
+                best_target = floor_val
+                best_delta = delta_floor
+            else:
+                best_target = ceil_val
+                best_delta = delta_ceil
+                
+            if best_delta == 0:
+                return {"target_bucket": best_target, "delta": 0, "is_candidate": False, "reason": "Exact Integer"}
             
-            return {"target_bucket": u_bucket, "delta": delta, "is_candidate": False, "reason": "Delta > 0.3"}
+            if 0 < best_delta <= 0.3:
+                return {"target_bucket": best_target, "delta": best_delta, "is_candidate": True}
+            
+            return {"target_bucket": best_target, "delta": best_delta, "is_candidate": False, "reason": "Delta > 0.3"}
             
         except Exception as e:
             print(f"[Error] Computing bucket for {temp}: {e}")

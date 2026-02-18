@@ -94,10 +94,12 @@
                     <div class="flex justify-between items-center mb-6">
                         <h2 class="text-lg font-bold flex items-center gap-2 text-white/90">
                             proposed opportunities
-                            {% if proposed_trades|length > 0 %}
-                            <span class="bg-violet-500/20 text-violet-400 text-[10px] px-2 py-0.5 rounded-full">{{
-                                proposed_trades|length }}</span>
-                            {% endif %}
+                            <span id="opp-counter">
+                                {% if proposed_trades|length > 0 %}
+                                <span class="bg-violet-500/20 text-violet-400 text-[10px] px-2 py-0.5 rounded-full">{{
+                                    proposed_trades|length }}</span>
+                                {% endif %}
+                            </span>
                         </h2>
 
                         <form hx-post="/api/filters" hx-trigger="change delay:500ms" hx-swap="none"

@@ -2,7 +2,7 @@
 setlocal enabledelayedexpansion
 
 REM Set project ID if known, otherwise use gcloud config
-REM set PROJECT_ID=your-project-id
+set PROJECT_ID=r00m-486700
 
 echo Creating secrets from .env file...
 
